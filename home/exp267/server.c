@@ -127,7 +127,7 @@ static int server_settings_init(server *s) {
 
     ngtcp2_settings_default(&settings);
     settings.initial_ts = timestamp();
-    settings.log_printf = debug_log;
+    settings.log_printf = debug_log; // Allows ngtcp2 debug
 
     s->settings = malloc(sizeof(settings));
 
@@ -196,6 +196,10 @@ static int server_init(server *s) {
     s->ref.user_data = s;
     s->ref.get_conn = get_conn;
 
+    // Server is not connected. No open stream
+    s->connected = 0;
+    s->stream_id = -1;
+
     rv = server_wolfssl_init(s);
     if (rv != 0) {
         return rv;
@@ -260,31 +264,15 @@ static int server_await_message(server *s, struct iovec *iov, struct sockaddr *r
 }
 
 static int server_accept_connection(server *s, struct iovec *iov, ngtcp2_path *path) {
-    ngtcp2_version_cid version;
     ngtcp2_pkt_hd header;
-
     ngtcp2_transport_params params;
 
     int rv;
 
-    rv = ngtcp2_pkt_decode_version_cid(&version, iov->iov_base, iov->iov_len, NGTCP2_MAX_CIDLEN);
-    
-    // TODO - Fix this assumtion?
-    // Assume that the connection DCID is not found
-    
-    if (rv != 0) {
-        fprintf(stderr, "Could not decode the version\n");
-        return rv;
+    if (s->connected) {
+        //TODO - Error message, error code
+        return -1;
     }
-
-    /*
-    // DEBUG - https://nghttp2.org/ngtcp2/ngtcp2_pkt_decode_version_cid.html#c.ngtcp2_pkt_decode_version_cid
-    if (version.scid == NULL) {
-        fprintf(stdout, "Recieved a short packet header\n");
-    } else {
-        fprintf(stdout, "Recieved a long packet header\n");
-    }
-    */
 
     // Determine if the received first message is acceptable
     // If it is, write the data into the header structure
@@ -318,35 +306,43 @@ static int server_accept_connection(server *s, struct iovec *iov, ngtcp2_path *p
         return rv;
     }
 
+    s->connected = 1;
     return 0;
 }
 
-static int server_await_connection(server *s) {
-    // TODO - Break function down further
-
+static int server_read_step(server *s, uint8_t *buf, size_t bufsize) {
     struct sockaddr remote_addr;
+    struct iovec iov;
+    ngtcp2_version_cid version;
 
     int rv;
 
-    struct iovec iov;
     // Must allocate space to save the incoming data into and set the pointer
-    // TODO - Use a macro for the buf size and pull it out the defn
-    uint8_t buf[8092];
     iov.iov_base = buf;
-    iov.iov_len = sizeof(buf);
+    iov.iov_len = bufsize;
 
-    // Call is blocking
-    // Server waits for message on fd saved in s, saves data into iov and address into remote_addr
+    // Blocking call
     rv = server_await_message(s, &iov, &remote_addr, sizeof(remote_addr));
 
     if (rv == 0) {
         fprintf(stdout, "Client closed connection\n");
         return -1; // TODO - Change this return value. New error origin point
     } else if (rv < 0) {
-        // TODO - fprintf error
         return rv;
     }
-    
+
+    // If rv>0, server_await_message successfully read rv bytes
+    // TODO - Determine if we need this value
+    // If iov.iov_len == rv, then it's not needed and we can make server_await_message work with error vals
+
+    rv = ngtcp2_pkt_decode_version_cid(&version, iov.iov_base, iov.iov_len, NGTCP2_MAX_CIDLEN);
+    if (rv != 0) {
+        // TODO - Error message
+        return rv;
+    }
+
+    // If got to here, the packet recieved is an acceptable QUIC packet
+
     // remoteaddr populated by server_await_message
     ngtcp2_path path = {
         .local = {
@@ -359,21 +355,109 @@ static int server_await_connection(server *s) {
         }
     };
 
-    // TODO - Comment with docs
-    rv = server_accept_connection(s, &iov, &path);
-
-    if (rv != 0) {
-        // TODO - fprintf
-        return rv;
+    // If we're not currently connected, try accepting the connection. If it works, procede with actioning the packet
+    if (!s->connected) {
+        rv = server_accept_connection(s, &iov, &path);
+        if (rv != 0) {
+            return rv;
+        }
     }
 
-    fprintf(stdout, "Successfully created conn object\n");
-
-    // TODO - Add comment docs. Check ngtcp2 manual
+    // General actions on the packet (including processing incoming handshake on conn if incomplete)
     rv = ngtcp2_conn_read_pkt(s->conn, &path, NULL, iov.iov_base, iov.iov_len, timestamp());
+
+    // TODO - Find where the payload goes? Is it one of the callbacks?
+    // recv_stream_data? https://nghttp2.org/ngtcp2/types.html#c.ngtcp2_recv_stream_data
 
     if (rv != 0) {
         fprintf(stderr, "Failed to read packet\n");
+        return rv;
+    }
+
+    return 0;
+}
+
+// TODO - Function is the same as the client one. How do we improve this?
+// Could move it into utils/new file and take *conn and streamid rather than *s
+static int server_prepare_packet(server *s, uint8_t *buf, size_t bufsize, size_t *pktlen, struct iovec *iov, size_t iov_count) {
+    // Write stream prepares the message to be sent into buf and returns size of the message
+    ngtcp2_tstamp ts = timestamp();
+    ngtcp2_pkt_info pi;
+    ngtcp2_path_storage ps;
+    ngtcp2_ssize wdatalen;
+
+    int rv;
+
+    ngtcp2_path_storage_zero(&ps);
+
+    // TODO - Apparently need to make a call to ngtcp2_conn_update_pkt_tx_time after writev_stream
+    // Need to cast *iov to (ngtcp2_vec*). Apparently safe: https://nghttp2.org/ngtcp2/types.html#c.ngtcp2_vec
+    rv = ngtcp2_conn_writev_stream(s->conn, &ps.path, &pi, buf, bufsize, &wdatalen, NGTCP2_WRITE_STREAM_FLAG_NONE, s->stream_id, (ngtcp2_vec*) iov, iov_count, ts);
+    if (rv < 0) {
+        fprintf(stderr, "Trying to write to stream failed: %s\n", ngtcp2_strerror(rv));
+        return rv;
+    }
+
+    if (rv == 0) {
+        // TODO - If rv == 0, buffer is too small or packet is congestion limited. Handle this case
+        ;
+    }
+
+    *pktlen = rv;
+
+    return 0;
+}
+
+// TODO - As above - Same as client_send_packet
+static int server_send_packet(server *s, uint8_t *pkt, size_t pktlen) {
+    struct iovec msg_iov;
+    struct msghdr msg;
+
+    int rv;
+
+    msg_iov.iov_base = pkt;
+    msg_iov.iov_len = pktlen;
+
+    msg.msg_iov = &msg_iov;
+    msg.msg_iovlen = 1;
+
+    // TODO - Maybe poll to wait for the fd to be ready to write
+
+    // TODO - Look into flags
+    rv = sendmsg(s->fd, &msg, 0);
+
+    // On success rv > 0 is the number of bytes sent
+
+    if (rv == -1) {
+        fprintf(stderr, "sendmsg: %s\n", strerror(errno));
+        return rv;
+    }
+
+    return 0;
+}
+
+static int server_write_step(server *s, uint8_t *data, size_t datalen, uint8_t *buf, size_t bufsize) {
+    // Data and datalen is the data to be written
+    // Buf and bufsize is a general use memory allocation (eg. to pass packets to subroutines)
+    size_t pktlen;
+    struct iovec iov;
+
+    // TODO - WHY DOES DECLARING THIS ARRAY AFFECT BUF
+    uint8_t dummy[BUF_SIZE];
+
+    int rv;
+
+    iov.iov_base = data;
+    iov.iov_len = datalen;
+
+    rv = server_prepare_packet(s, buf, bufsize, &pktlen, &iov, 1);
+
+    if (rv != 0) {
+        return rv;
+    }
+
+    rv = server_send_packet(s, buf, pktlen);
+    if (rv != 0) {
         return rv;
     }
 
@@ -391,6 +475,9 @@ int main(int argc, char **argv) {
 
     int rv;
 
+    uint8_t buf[BUF_SIZE];
+    uint8_t message[] = "Hello client!";
+
     // Server settings and parameters
     ngtcp2_transport_params params;
     ngtcp2_settings settings;
@@ -402,13 +489,17 @@ int main(int argc, char **argv) {
 
     // Server struct has fd, localaddr, ssl, callbacks and settings assigned
 
-    rv = server_await_connection(&s);
+    while (1) {
+        rv = server_read_step(&s, buf, sizeof(buf));
+        if (rv != 0) {
+            return rv;
+        }
 
-    if (rv != 0) {
-        return rv;
+        rv = server_write_step(&s, message, sizeof(message), buf, sizeof(buf));
+        if (rv != 0) {
+            return rv;
+        }
     }
-
-    // TODO - Implement read-write server loop
 
     return 0;
 }

@@ -16,12 +16,15 @@ static int handshake_completed_cb(ngtcp2_conn* conn, void* user_data) {
 static int extend_max_local_streams_uni_cb(ngtcp2_conn *conn, uint64_t max_streams, void *user_data) {
     fprintf(stdout, "Starting call to extend_max_local_streams_uni_cb\n");
 
-    int64_t stream_id = 1;
+    int64_t stream_id;
     int rv = ngtcp2_conn_open_uni_stream(conn, &stream_id, NULL);
     if (rv < 0) {
         fprintf(stderr, "Failed to open new uni stream: %s\n", ngtcp2_strerror(rv));
         return ERROR_NEW_STREAM;
     }
+
+    client *c = (client*) user_data;
+    c->stream_id = stream_id;
 
     fprintf(stdout, "Successfully opened new uni stream\n");
     return 0;
@@ -52,7 +55,6 @@ static int client_wolfssl_init(client *c) {
         return ERROR_WOLFSSL_SETUP;
     }
 
-    // TODO - Unclear what these parts of the setup do. Experiment with combos & check openSSL docs
     wolfSSL_set_app_data(c->ssl, &c->ref);
     wolfSSL_set_connect_state(c->ssl);
     // QUIC version 1
@@ -180,11 +182,11 @@ static int client_ngtcp2_init(client *c) {
     };
 
     ngtcp2_settings_default(&settings);
-
-    // Enable debugging
-    settings.log_printf = debug_log;
     // Set initial timestamp. Exact value is unimportant
     settings.initial_ts = timestamp();
+
+    // Enable debugging
+    settings.log_printf = debug_log; // ngtcp2 debugging
 
     ngtcp2_transport_params_default(&params);
 
@@ -270,12 +272,12 @@ static int client_init(client *c) {
     return 0;
 }
 
-static int client_prepare_packet(client *c, uint8_t *buf, size_t buflen, size_t *bytes_written, struct iovec *iov, size_t iov_count) {
+static int client_prepare_packet(client *c, uint8_t *buf, size_t buflen, size_t *pktlen, struct iovec *iov, size_t iov_count) {
     // Write stream prepares the message to be sent into buf and returns size of the message
     ngtcp2_tstamp ts = timestamp();
     ngtcp2_pkt_info pi;
     ngtcp2_path_storage ps;
-    ngtcp2_ssize wdatalen;
+    ngtcp2_ssize wdatalen; // wdatalen is the length of data within STREAM (data) frames only
 
     int rv;
 
@@ -294,20 +296,19 @@ static int client_prepare_packet(client *c, uint8_t *buf, size_t buflen, size_t 
         ;
     }
 
-    *bytes_written = rv;
+    *pktlen = rv;
 
     return 0;
 }
 
-static int client_send_packet(client *c, uint8_t* buf, size_t nwrite) {
-    // TODO - Improve the buf and nwrite variable names
+static int client_send_packet(client *c, uint8_t* pkt, size_t pktlen) {
     struct iovec msg_iov;
     struct msghdr msg;
 
     int rv;
 
-    msg_iov.iov_base = buf;
-    msg_iov.iov_len = nwrite;
+    msg_iov.iov_base = pkt;
+    msg_iov.iov_len = pktlen;
 
     msg.msg_iov = &msg_iov;
     msg.msg_iovlen = 1;
@@ -327,10 +328,10 @@ static int client_send_packet(client *c, uint8_t* buf, size_t nwrite) {
     return 0;
 }
 
-static int client_establish_connection(client *c) {
-    // TODO - Pull the buf further up so it persists
-    size_t bytes_written;
-    uint8_t buf[8192]; // Smallest power of 2 that didn't throw "No buffer space available"
+static int client_establish_connection(client *c, uint8_t *buf, size_t buflen) {
+    size_t pktlen;
+    // TODO - client_send_packet throws bad address (sendmsg seg fault) when dummy isn't defined, even though it is never used
+    uint8_t dummy[BUF_SIZE];
     
     struct iovec iov;
     size_t iov_count;
@@ -339,15 +340,14 @@ static int client_establish_connection(client *c) {
 
     iov_count = 0;
 
-    rv = client_prepare_packet(c, buf, sizeof(buf), &bytes_written, &iov, iov_count);
-    // If success, rv > 0 is the number of bytes saved into buf
+    rv = client_prepare_packet(c, buf, buflen, &pktlen, &iov, iov_count);
     if (rv != 0) {
-        // TODO - Add error message?
-        fprintf(stderr, "client_establish_connection: TODO - Implement this message\n");
         return rv;
     }
 
-    rv = client_send_packet(c, buf, bytes_written);
+    printf("pktlen in client_establish_connection: %ld\n", pktlen);
+
+    rv = client_send_packet(c, buf, pktlen);
 
     if (rv != 0) {
         return rv;
@@ -365,6 +365,8 @@ static int client_deinit(client *c) {
 int main(int argc, char **argv){
     client c;
 
+    uint8_t buf[BUF_SIZE];
+
     int rv;
 
     rv = client_init(&c);
@@ -374,7 +376,7 @@ int main(int argc, char **argv){
         return rv;
     }
 
-    rv = client_establish_connection(&c);
+    rv = client_establish_connection(&c, buf, BUF_SIZE);
 
     if (rv != 0) {
         return rv;

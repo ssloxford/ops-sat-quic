@@ -10,14 +10,15 @@ typedef struct _server {
 
     int fd;
 
-    // TODO - What if sockaddr isn't big enough to hold the bound address
+    int connected;
+    uint64_t stream_id;
+
     ngtcp2_sockaddr localsock;
     ngtcp2_socklen locallen;
 
     WOLFSSL* ssl;
     WOLFSSL_CTX* ctx;
 
-    // TODO - Use these fields
     ngtcp2_callbacks *callbacks;
     ngtcp2_settings *settings;
 } server;

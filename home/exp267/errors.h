@@ -1,6 +1,8 @@
 // TODO - Allocate negative values to these codes
 // TODO - Typedef an error code as int and update throughout
 
+typedef err int;
+
 #define SUCCESS 0
 
 #define ERROR_DCID_GEN -11
