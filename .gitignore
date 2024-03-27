@@ -1,3 +1,7 @@
+# User-defined
+#Log files
+*.log
+
 # Prerequisites
 *.d
 
