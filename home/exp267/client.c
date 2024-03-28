@@ -7,6 +7,7 @@
 #include "client.h"
 #include "utils.h"
 #include "errors.h"
+#include "connection.h"
 
 // Globally accessable buffer to pass packets for encode/decode
 uint8_t buf[BUF_SIZE];
@@ -342,14 +343,14 @@ static int client_establish_connection(client *c) {
 
     iov_count = 0;
 
-    rv = client_prepare_packet(c, &pktlen, &iov, iov_count);
+    rv = prepare_packet(c->conn, c->stream_id, &pktlen, &iov, iov_count);
     if (rv != 0) {
         return rv;
     }
 
     printf("pktlen in client_establish_connection: %ld\n", pktlen);
 
-    rv = client_send_packet(c, pktlen);
+    rv = send_packet(c->fd, pktlen);
 
     if (rv != 0) {
         return rv;

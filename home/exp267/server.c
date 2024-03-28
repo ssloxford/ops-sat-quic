@@ -11,6 +11,7 @@
 #include "utils.h"
 #include "errors.h"
 #include "server.h"
+#include "connection.h"
 
 // Globally accessable buffer to store/pass packets after encode/decode
 uint8_t buf[BUF_SIZE];
@@ -330,7 +331,7 @@ static int server_read_step(server *s, uint8_t *buf, size_t bufsize) {
     iov.iov_len = bufsize;
 
     // Blocking call
-    rv = server_await_message(s, &iov, &remote_addr, sizeof(remote_addr));
+    rv = await_message(s->fd, &iov, &remote_addr, sizeof(remote_addr));
 
     if (rv == 0) {
         fprintf(stdout, "Client closed connection\n");
