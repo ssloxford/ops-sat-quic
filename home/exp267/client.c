@@ -8,6 +8,9 @@
 #include "utils.h"
 #include "errors.h"
 
+// Globally accessable buffer to pass packets for encode/decode
+uint8_t buf[BUF_SIZE];
+
 static int handshake_completed_cb(ngtcp2_conn* conn, void* user_data) {
     fprintf(stdout, "Successfully completed handshake\n");
     return 0;
@@ -272,7 +275,7 @@ static int client_init(client *c) {
     return 0;
 }
 
-static int client_prepare_packet(client *c, uint8_t *buf, size_t buflen, size_t *pktlen, struct iovec *iov, size_t iov_count) {
+static int client_prepare_packet(client *c, size_t *pktlen, struct iovec *iov, size_t iov_count) {
     // Write stream prepares the message to be sent into buf and returns size of the message
     ngtcp2_tstamp ts = timestamp();
     ngtcp2_pkt_info pi;
@@ -285,7 +288,7 @@ static int client_prepare_packet(client *c, uint8_t *buf, size_t buflen, size_t 
 
     // TODO - Apparently need to make a call to ngtcp2_conn_update_pkt_tx_time after writev_stream
     // Need to cast *iov to (ngtcp2_vec*). Apparently safe: https://nghttp2.org/ngtcp2/types.html#c.ngtcp2_vec
-    rv = ngtcp2_conn_writev_stream(c->conn, &ps.path, &pi, buf, buflen, &wdatalen, NGTCP2_WRITE_STREAM_FLAG_NONE, c->stream_id, (ngtcp2_vec*) iov, iov_count, ts);
+    rv = ngtcp2_conn_writev_stream(c->conn, &ps.path, &pi, buf, sizeof(buf), &wdatalen, NGTCP2_WRITE_STREAM_FLAG_NONE, c->stream_id, (ngtcp2_vec*) iov, iov_count, ts);
     if (rv < 0) {
         fprintf(stderr, "Trying to write to stream failed: %s\n", ngtcp2_strerror(rv));
         return rv;
@@ -301,13 +304,14 @@ static int client_prepare_packet(client *c, uint8_t *buf, size_t buflen, size_t 
     return 0;
 }
 
-static int client_send_packet(client *c, uint8_t* pkt, size_t pktlen) {
+static int client_send_packet(client *c, size_t pktlen) {
     struct iovec msg_iov;
     struct msghdr msg;
 
     int rv;
 
-    msg_iov.iov_base = pkt;
+    // Assume that there is a packet to be sent in the global buf array
+    msg_iov.iov_base = buf;
     msg_iov.iov_len = pktlen;
 
     msg.msg_iov = &msg_iov;
@@ -328,10 +332,8 @@ static int client_send_packet(client *c, uint8_t* pkt, size_t pktlen) {
     return 0;
 }
 
-static int client_establish_connection(client *c, uint8_t *buf, size_t buflen) {
+static int client_establish_connection(client *c) {
     size_t pktlen;
-    // TODO - client_send_packet throws bad address (sendmsg seg fault) when dummy isn't defined, even though it is never used
-    uint8_t dummy[BUF_SIZE];
     
     struct iovec iov;
     size_t iov_count;
@@ -340,14 +342,14 @@ static int client_establish_connection(client *c, uint8_t *buf, size_t buflen) {
 
     iov_count = 0;
 
-    rv = client_prepare_packet(c, buf, buflen, &pktlen, &iov, iov_count);
+    rv = client_prepare_packet(c, &pktlen, &iov, iov_count);
     if (rv != 0) {
         return rv;
     }
 
     printf("pktlen in client_establish_connection: %ld\n", pktlen);
 
-    rv = client_send_packet(c, buf, pktlen);
+    rv = client_send_packet(c, pktlen);
 
     if (rv != 0) {
         return rv;
@@ -365,8 +367,6 @@ static int client_deinit(client *c) {
 int main(int argc, char **argv){
     client c;
 
-    uint8_t buf[BUF_SIZE];
-
     int rv;
 
     rv = client_init(&c);
@@ -376,11 +376,14 @@ int main(int argc, char **argv){
         return rv;
     }
 
-    rv = client_establish_connection(&c, buf, BUF_SIZE);
+    rv = client_establish_connection(&c);
 
     if (rv != 0) {
         return rv;
     }
+
+    // TODO - Get the client reading packets
+    // Then put it in a loop
 
     return 0;
 }

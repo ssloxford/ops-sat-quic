@@ -12,7 +12,8 @@
 #include "errors.h"
 #include "server.h"
 
-// TODO - Look unto spaceQUIC https://github.com/ssloxford/spaceQUIC/blob/main/code/libs/space_quic/fsw/src/quic/serv.c
+// Globally accessable buffer to store/pass packets after encode/decode
+uint8_t buf[BUF_SIZE];
 
 static int server_wolfssl_init(server *s) {
     WOLFSSL_METHOD* method;
@@ -306,6 +307,13 @@ static int server_accept_connection(server *s, struct iovec *iov, ngtcp2_path *p
         return rv;
     }
 
+    rv = connect(s->fd, path->remote.addr, path->remote.addrlen);
+
+    if (rv != 0) {
+        fprintf(stdout, "Failed to add connection to fd\n");
+        return rv;
+    }
+
     s->connected = 1;
     return 0;
 }
@@ -475,7 +483,6 @@ int main(int argc, char **argv) {
 
     int rv;
 
-    uint8_t buf[BUF_SIZE];
     uint8_t message[] = "Hello client!";
 
     // Server settings and parameters
