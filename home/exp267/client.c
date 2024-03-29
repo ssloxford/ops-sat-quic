@@ -348,11 +348,71 @@ static int client_establish_connection(client *c) {
         return rv;
     }
 
-    printf("pktlen in client_establish_connection: %ld\n", pktlen);
-
     rv = send_packet(c->fd, pktlen);
 
     if (rv != 0) {
+        return rv;
+    }
+
+    return 0;
+}
+
+
+// TODO - Same as server. Try bringing it into connection.c
+static int client_read_step(client *c) {
+    struct sockaddr remote_addr;
+    struct iovec iov;
+    ngtcp2_version_cid version;
+
+    int rv;
+
+    // Must allocate space to save the incoming data into and set the pointer
+    iov.iov_base = buf;
+    iov.iov_len = sizeof(buf);
+
+    // Blocking call
+    rv = await_message(c->fd, &iov, &remote_addr, sizeof(remote_addr));
+
+    if (rv == 0) {
+        fprintf(stdout, "Client closed connection\n");
+        return -1; // TODO - Change this return value. New error origin point
+    } else if (rv < 0) {
+        return rv;
+    }
+
+    // If rv>0, server_await_message successfully read rv bytes
+    // TODO - Determine if we need this value
+    // If iov.iov_len == rv, then it's not needed and we can make await_message work with error vals
+
+    rv = ngtcp2_pkt_decode_version_cid(&version, iov.iov_base, iov.iov_len, NGTCP2_MAX_CIDLEN);
+    if (rv != 0) {
+        fprintf(stderr, "Failed to decode version cid: \n");
+        return rv;
+    }
+
+    // If got to here, the packet recieved is an acceptable QUIC packet
+
+    // remoteaddr populated by await_message
+    // TODO - Assert that remoteaddr is the same as the one saved in c
+    ngtcp2_path path = {
+        .local = {
+            .addr = &c->localsock,
+            .addrlen = c->locallen,
+        },
+        .remote = {
+            .addr = &remote_addr,
+            .addrlen = sizeof(remote_addr),
+        }
+    };
+
+    // General actions on the packet (including processing incoming handshake on conn if incomplete)
+    rv = ngtcp2_conn_read_pkt(c->conn, &path, NULL, iov.iov_base, iov.iov_len, timestamp());
+
+    // TODO - Find where the payload goes? Is it one of the callbacks?
+    // recv_stream_data? https://nghttp2.org/ngtcp2/types.html#c.ngtcp2_recv_stream_data
+
+    if (rv != 0) {
+        fprintf(stderr, "Failed to read packet\n");
         return rv;
     }
 
@@ -377,14 +437,19 @@ int main(int argc, char **argv){
         return rv;
     }
 
-    rv = client_establish_connection(&c);
+    while (1) {
+        rv = client_establish_connection(&c);
 
-    if (rv != 0) {
-        return rv;
+        if (rv != 0) {
+            return rv;
+        }
+
+        rv = client_read_step(&c);
+        
+        if (rv != 0) {
+            return rv;
+        }
     }
-
-    // TODO - Get the client reading packets
-    // Then put it in a loop
 
     return 0;
 }

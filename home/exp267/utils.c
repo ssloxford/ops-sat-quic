@@ -43,7 +43,7 @@ int get_new_connection_id_cb(ngtcp2_conn* conn, ngtcp2_cid* cid, uint8_t* token,
     WC_RNG rng;
     int rv;
 
-    fprintf(stdout, "Starting call to get_new_connection_id_cb\n");
+    // fprintf(stdout, "Starting call to get_new_connection_id_cb\n");
 
     rv = wc_InitRng(&rng);
     if (rv != 0) {

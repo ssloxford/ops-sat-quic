@@ -45,6 +45,8 @@ int send_packet(int fd, size_t pktlen) {
     struct iovec msg_iov;
     struct msghdr msg;
 
+    memset(&msg, 0, sizeof(msg));
+
     int rv;
 
     // Assume that there is a packet to be sent in the global buf array
@@ -100,6 +102,11 @@ int await_message(int fd, struct iovec *iov, struct sockaddr *remote_addr, size_
     
     // TODO - Think about flags here. https://pubs.opengroup.org/onlinepubs/009695399/functions/recvmsg.html
     rv = recvmsg(fd, &msg, 0);
+
+    if (rv == -1) {
+        fprintf(stderr, "recvmsg: %s\n", strerror(errno));
+        return rv;
+    }
 
     // Warning when buffer is not big enough to store the recieved message
     if (msg.msg_flags & MSG_TRUNC) {

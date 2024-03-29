@@ -16,6 +16,11 @@
 // Globally accessable buffer to store/pass packets after encode/decode
 uint8_t buf[BUF_SIZE];
 
+static int handshake_completed_cb(ngtcp2_conn* conn, void* user_data) {
+    fprintf(stdout, "Successfully completed handshake\n");
+    return 0;
+}
+
 static int server_wolfssl_init(server *s) {
     WOLFSSL_METHOD* method;
 
@@ -342,7 +347,7 @@ static int server_read_step(server *s, uint8_t *buf, size_t bufsize) {
 
     // If rv>0, server_await_message successfully read rv bytes
     // TODO - Determine if we need this value
-    // If iov.iov_len == rv, then it's not needed and we can make server_await_message work with error vals
+    // If iov.iov_len == rv, then it's not needed and we can make await_message work with error vals
 
     rv = ngtcp2_pkt_decode_version_cid(&version, iov.iov_base, iov.iov_len, NGTCP2_MAX_CIDLEN);
     if (rv != 0) {
@@ -422,6 +427,8 @@ static int server_send_packet(server *s, uint8_t *pkt, size_t pktlen) {
     struct iovec msg_iov;
     struct msghdr msg;
 
+    memset(&msg, 0, sizeof(msg));
+
     int rv;
 
     msg_iov.iov_base = pkt;
@@ -452,7 +459,7 @@ static int server_write_step(server *s, uint8_t *data, size_t datalen, uint8_t *
     struct iovec iov;
 
     // TODO - WHY DOES DECLARING THIS ARRAY AFFECT BUF
-    uint8_t dummy[BUF_SIZE];
+    // uint8_t dummy[BUF_SIZE];
 
     int rv;
 
