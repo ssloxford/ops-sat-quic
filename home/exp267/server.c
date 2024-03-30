@@ -21,6 +21,24 @@ static int handshake_completed_cb(ngtcp2_conn* conn, void* user_data) {
     return 0;
 }
 
+static int extend_max_local_streams_uni_cb(ngtcp2_conn *conn, uint64_t max_streams, void *user_data) {
+    fprintf(stdout, "Attempting to open new uni stream\n");
+
+    int64_t stream_id;
+    int rv = ngtcp2_conn_open_uni_stream(conn, &stream_id, NULL);
+    if (rv < 0) {
+        fprintf(stderr, "Failed to open new uni stream: %s\n", ngtcp2_strerror(rv));
+        return ERROR_NEW_STREAM;
+    }
+
+    server *s = (server*) user_data;
+    s->stream_id = stream_id;
+
+    fprintf(stdout, "Successfully opened new uni stream: %ld\n", stream_id);
+
+    return 0;
+}
+
 static int server_wolfssl_init(server *s) {
     WOLFSSL_METHOD* method;
 
@@ -82,7 +100,7 @@ static int server_settings_init(server *s) {
         ngtcp2_crypto_client_initial_cb,
         ngtcp2_crypto_recv_client_initial_cb, /* recv_client_initial */
         ngtcp2_crypto_recv_crypto_data_cb,
-        NULL, /* handshake_completed */
+        handshake_completed_cb, /* handshake_completed */
         NULL, /* recv_version_negotiation */
         ngtcp2_crypto_encrypt_cb,
         ngtcp2_crypto_decrypt_cb,
@@ -94,7 +112,7 @@ static int server_settings_init(server *s) {
         NULL, /* recv_stateless_reset */
         NULL, /* recv_retry */
         NULL, /* extend_max_local_streams_bidi */
-        NULL, /* extend_max_local_streams_uni */
+        extend_max_local_streams_uni_cb, /* extend_max_local_streams_uni */
         rand_cb, // Not provided by library
         get_new_connection_id_cb, // Not provided by library
         NULL, /* remove_connection_id */
@@ -346,12 +364,10 @@ static int server_read_step(server *s, uint8_t *buf, size_t bufsize) {
     }
 
     // If rv>0, server_await_message successfully read rv bytes
-    // TODO - Determine if we need this value
-    // If iov.iov_len == rv, then it's not needed and we can make await_message work with error vals
 
     rv = ngtcp2_pkt_decode_version_cid(&version, iov.iov_base, iov.iov_len, NGTCP2_MAX_CIDLEN);
     if (rv != 0) {
-        // TODO - Error message
+        fprintf(stderr, "Could not decode packet version: %s\n", ngtcp2_strerror(rv));
         return rv;
     }
 
@@ -384,7 +400,7 @@ static int server_read_step(server *s, uint8_t *buf, size_t bufsize) {
     // recv_stream_data? https://nghttp2.org/ngtcp2/types.html#c.ngtcp2_recv_stream_data
 
     if (rv != 0) {
-        fprintf(stderr, "Failed to read packet\n");
+        fprintf(stderr, "Failed to read packet: %s\n", ngtcp2_strerror(rv));
         return rv;
     }
 

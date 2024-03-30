@@ -14,6 +14,13 @@ uint8_t buf[BUF_SIZE];
 
 static int handshake_completed_cb(ngtcp2_conn* conn, void* user_data) {
     fprintf(stdout, "Successfully completed handshake\n");
+
+    return 0;
+}
+
+static int handshake_confirmed_cb(ngtcp2_conn *conn, void *user_data) {
+    fprintf(stdout, "Successfully confirmed handshake\n");
+
     return 0;
 }
 
@@ -31,6 +38,19 @@ static int extend_max_local_streams_uni_cb(ngtcp2_conn *conn, uint64_t max_strea
     c->stream_id = stream_id;
 
     fprintf(stdout, "Successfully opened new uni stream\n");
+
+    return 0;
+}
+
+static int stream_open_cb(ngtcp2_conn *conn, int64_t stream_id, void *user_data) {
+    fprintf(stdout, "Server opened stream: %ld\n", stream_id);
+
+    return 0;
+}
+
+static int recv_stream_data_cb(ngtcp2_conn *conn, uint32_t flags, int64_t stream_id, uint64_t offset, const uint8_t *data, size_t datalen, void *user_data, void *stream_user_data) {
+    fprintf(stdout, "%*s\n", (int) datalen, data);
+
     return 0;
 }
 
@@ -151,9 +171,9 @@ static int client_ngtcp2_init(client *c) {
         ngtcp2_crypto_encrypt_cb,
         ngtcp2_crypto_decrypt_cb,
         ngtcp2_crypto_hp_mask_cb,
-        NULL, /* recv_stream_data */
+        recv_stream_data_cb, /* recv_stream_data */
         NULL, /* acked_stream_data_offset */
-        NULL, /* stream_open */
+        stream_open_cb, /* stream_open */
         NULL, /* stream_close */
         NULL, /* recv_stateless_reset */
         ngtcp2_crypto_recv_retry_cb,
@@ -170,7 +190,7 @@ static int client_ngtcp2_init(client *c) {
         NULL, /* extend_max_remote_streams_uni */
         NULL, /* extend_max_stream_data */
         NULL, /* dcid_status */
-        NULL, /* handshake_confirmed */
+        handshake_confirmed_cb, /* handshake_confirmed */
         NULL, /* recv_new_token */
         ngtcp2_crypto_delete_crypto_aead_ctx_cb,
         ngtcp2_crypto_delete_crypto_cipher_ctx_cb,
@@ -333,7 +353,7 @@ static int client_send_packet(client *c, size_t pktlen) {
     return 0;
 }
 
-static int client_establish_connection(client *c) {
+static int client_write_step(client *c, uint8_t *data, size_t datalen) {
     size_t pktlen;
     
     struct iovec iov;
@@ -341,7 +361,10 @@ static int client_establish_connection(client *c) {
 
     int rv;
 
-    iov_count = 0;
+    iov.iov_base = data;
+    iov.iov_len = datalen;
+
+    iov_count = 1;
 
     rv = prepare_packet(c->conn, c->stream_id, &pktlen, &iov, iov_count);
     if (rv != 0) {
@@ -412,7 +435,7 @@ static int client_read_step(client *c) {
     // recv_stream_data? https://nghttp2.org/ngtcp2/types.html#c.ngtcp2_recv_stream_data
 
     if (rv != 0) {
-        fprintf(stderr, "Failed to read packet\n");
+        fprintf(stderr, "Failed to read packet: %s\n", ngtcp2_strerror(rv));
         return rv;
     }
 
@@ -430,6 +453,8 @@ int main(int argc, char **argv){
 
     int rv;
 
+    uint8_t message[] = "Hello server!";
+
     rv = client_init(&c);
 
     // If client init failed, propagate error
@@ -438,7 +463,7 @@ int main(int argc, char **argv){
     }
 
     while (1) {
-        rv = client_establish_connection(&c);
+        rv = client_write_step(&c, message, sizeof(message));
 
         if (rv != 0) {
             return rv;
