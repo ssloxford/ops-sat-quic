@@ -39,6 +39,12 @@ static int extend_max_local_streams_uni_cb(ngtcp2_conn *conn, uint64_t max_strea
     return 0;
 }
 
+static int recv_stream_data_cb(ngtcp2_conn *conn, uint32_t flags, int64_t stream_id, uint64_t offset, const uint8_t *data, size_t datalen, void *user_data, void *stream_user_data) {
+    fprintf(stdout, "%*s\n", (int) datalen, data);
+
+    return 0;
+}
+
 static int server_wolfssl_init(server *s) {
     WOLFSSL_METHOD* method;
 
@@ -105,7 +111,7 @@ static int server_settings_init(server *s) {
         ngtcp2_crypto_encrypt_cb,
         ngtcp2_crypto_decrypt_cb,
         ngtcp2_crypto_hp_mask_cb,
-        NULL, /* recv_stream_data */
+        recv_stream_data_cb, /* recv_stream_data */
         NULL, /* acked_stream_data_offset */
         NULL, /* stream_open */
         NULL, /* stream_close */

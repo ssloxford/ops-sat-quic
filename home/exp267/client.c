@@ -54,12 +54,6 @@ static int recv_stream_data_cb(ngtcp2_conn *conn, uint32_t flags, int64_t stream
     return 0;
 }
 
-static int recv_rx_key_cb(ngtcp2_conn *conn, ngtcp2_encryption_level level, void *user_data) {
-    fprintf(stdout, "Installed RX key for level: %d", level);
-
-    return 0;
-}
-
 static int client_wolfssl_init(client *c) {
     WOLFSSL_METHOD* method;
 
