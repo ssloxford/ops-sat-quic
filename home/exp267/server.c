@@ -97,7 +97,7 @@ static int server_wolfssl_init(server *s) {
 static int server_settings_init(server *s) {
     // Similar to client.c. Removed unnecessary recv_retry callback
     ngtcp2_callbacks callbacks = {
-        ngtcp2_crypto_client_initial_cb,
+        NULL,
         ngtcp2_crypto_recv_client_initial_cb, /* recv_client_initial */
         ngtcp2_crypto_recv_crypto_data_cb,
         handshake_completed_cb, /* handshake_completed */
@@ -349,6 +349,8 @@ static int server_read_step(server *s, uint8_t *buf, size_t bufsize) {
 
     int rv;
 
+    size_t pktlen;
+
     // Must allocate space to save the incoming data into and set the pointer
     iov.iov_base = buf;
     iov.iov_len = bufsize;
@@ -363,9 +365,11 @@ static int server_read_step(server *s, uint8_t *buf, size_t bufsize) {
         return rv;
     }
 
+    pktlen = rv;
+
     // If rv>0, server_await_message successfully read rv bytes
 
-    rv = ngtcp2_pkt_decode_version_cid(&version, iov.iov_base, iov.iov_len, NGTCP2_MAX_CIDLEN);
+    rv = ngtcp2_pkt_decode_version_cid(&version, iov.iov_base, pktlen, NGTCP2_MAX_CIDLEN);
     if (rv != 0) {
         fprintf(stderr, "Could not decode packet version: %s\n", ngtcp2_strerror(rv));
         return rv;
@@ -394,7 +398,7 @@ static int server_read_step(server *s, uint8_t *buf, size_t bufsize) {
     }
 
     // General actions on the packet (including processing incoming handshake on conn if incomplete)
-    rv = ngtcp2_conn_read_pkt(s->conn, &path, NULL, iov.iov_base, iov.iov_len, timestamp());
+    rv = ngtcp2_conn_read_pkt(s->conn, &path, NULL, iov.iov_base, pktlen, timestamp());
 
     // TODO - Find where the payload goes? Is it one of the callbacks?
     // recv_stream_data? https://nghttp2.org/ngtcp2/types.html#c.ngtcp2_recv_stream_data

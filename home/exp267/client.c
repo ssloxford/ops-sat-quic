@@ -54,6 +54,12 @@ static int recv_stream_data_cb(ngtcp2_conn *conn, uint32_t flags, int64_t stream
     return 0;
 }
 
+static int recv_rx_key_cb(ngtcp2_conn *conn, ngtcp2_encryption_level level, void *user_data) {
+    fprintf(stdout, "Installed RX key for level: %d", level);
+
+    return 0;
+}
+
 static int client_wolfssl_init(client *c) {
     WOLFSSL_METHOD* method;
 
@@ -263,9 +269,8 @@ static int client_ngtcp2_init(client *c) {
 }
 
 static ngtcp2_conn* get_conn (ngtcp2_crypto_conn_ref* ref) {
-    client *data = (client*) ref->user_data;
-
-    return data->conn;
+    client *c = (client*) ref->user_data;
+    return c->conn;
 }
 
 static int client_init(client *c) {
@@ -389,6 +394,8 @@ static int client_read_step(client *c) {
 
     int rv;
 
+    size_t pktlen;
+
     // Must allocate space to save the incoming data into and set the pointer
     iov.iov_base = buf;
     iov.iov_len = sizeof(buf);
@@ -403,11 +410,13 @@ static int client_read_step(client *c) {
         return rv;
     }
 
+    pktlen = rv;
+
     // If rv>0, server_await_message successfully read rv bytes
     // TODO - Determine if we need this value
     // If iov.iov_len == rv, then it's not needed and we can make await_message work with error vals
 
-    rv = ngtcp2_pkt_decode_version_cid(&version, iov.iov_base, iov.iov_len, NGTCP2_MAX_CIDLEN);
+    rv = ngtcp2_pkt_decode_version_cid(&version, iov.iov_base, pktlen, NGTCP2_MAX_CIDLEN);
     if (rv != 0) {
         fprintf(stderr, "Failed to decode version cid: \n");
         return rv;
@@ -429,7 +438,7 @@ static int client_read_step(client *c) {
     };
 
     // General actions on the packet (including processing incoming handshake on conn if incomplete)
-    rv = ngtcp2_conn_read_pkt(c->conn, &path, NULL, iov.iov_base, iov.iov_len, timestamp());
+    rv = ngtcp2_conn_read_pkt(c->conn, &path, NULL, iov.iov_base, pktlen, timestamp());
 
     // TODO - Find where the payload goes? Is it one of the callbacks?
     // recv_stream_data? https://nghttp2.org/ngtcp2/types.html#c.ngtcp2_recv_stream_data
