@@ -37,7 +37,7 @@ static int extend_max_local_streams_uni_cb(ngtcp2_conn *conn, uint64_t max_strea
     client *c = (client*) user_data;
     c->stream_id = stream_id;
 
-    fprintf(stdout, "Successfully opened new uni stream\n");
+    fprintf(stdout, "Successfully opened new uni stream: %ld\n", stream_id);
 
     return 0;
 }
@@ -49,7 +49,7 @@ static int stream_open_cb(ngtcp2_conn *conn, int64_t stream_id, void *user_data)
 }
 
 static int recv_stream_data_cb(ngtcp2_conn *conn, uint32_t flags, int64_t stream_id, uint64_t offset, const uint8_t *data, size_t datalen, void *user_data, void *stream_user_data) {
-    fprintf(stdout, "%*s\n", (int) datalen, data);
+    fprintf(stdout, "Recieved stream data: %*s\n", (int) datalen, data);
 
     return 0;
 }
@@ -210,7 +210,7 @@ static int client_ngtcp2_init(client *c) {
     settings.initial_ts = timestamp();
 
     // Enable debugging
-    settings.log_printf = debug_log; // ngtcp2 debugging
+    // settings.log_printf = debug_log; // ngtcp2 debugging
 
     ngtcp2_transport_params_default(&params);
 
@@ -295,6 +295,7 @@ static int client_init(client *c) {
     return 0;
 }
 
+/*
 static int client_prepare_packet(client *c, size_t *pktlen, struct iovec *iov, size_t iov_count) {
     // Write stream prepares the message to be sent into buf and returns size of the message
     ngtcp2_tstamp ts = timestamp();
@@ -323,7 +324,9 @@ static int client_prepare_packet(client *c, size_t *pktlen, struct iovec *iov, s
 
     return 0;
 }
+*/
 
+/*
 static int client_send_packet(client *c, size_t pktlen) {
     struct iovec msg_iov;
     struct msghdr msg;
@@ -351,6 +354,7 @@ static int client_send_packet(client *c, size_t pktlen) {
 
     return 0;
 }
+*/
 
 static int client_write_step(client *c, uint8_t *data, size_t datalen) {
     size_t pktlen;
@@ -398,8 +402,8 @@ static int client_read_step(client *c) {
     rv = await_message(c->fd, &iov, &remote_addr, sizeof(remote_addr));
 
     if (rv == 0) {
-        fprintf(stdout, "Client closed connection\n");
-        return -1; // TODO - Change this return value. New error origin point
+        // fprintf(stdout, "No new messages\n");
+        return ERROR_NO_NEW_MESSAGE;
     } else if (rv < 0) {
         return rv;
     }
@@ -474,7 +478,7 @@ int main(int argc, char **argv){
 
         rv = client_read_step(&c);
         
-        if (rv != 0) {
+        if (rv != 0 && rv != ERROR_NO_NEW_MESSAGE) {
             return rv;
         }
     }

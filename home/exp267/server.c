@@ -40,7 +40,7 @@ static int extend_max_local_streams_uni_cb(ngtcp2_conn *conn, uint64_t max_strea
 }
 
 static int recv_stream_data_cb(ngtcp2_conn *conn, uint32_t flags, int64_t stream_id, uint64_t offset, const uint8_t *data, size_t datalen, void *user_data, void *stream_user_data) {
-    fprintf(stdout, "%*s\n", (int) datalen, data);
+    fprintf(stdout, "Recieved stream data: %*s\n", (int) datalen, data);
 
     return 0;
 }
@@ -158,7 +158,7 @@ static int server_settings_init(server *s) {
 
     ngtcp2_settings_default(&settings);
     settings.initial_ts = timestamp();
-    settings.log_printf = debug_log; // Allows ngtcp2 debug
+    // settings.log_printf = debug_log; // Allows ngtcp2 debug
 
     s->settings = malloc(sizeof(settings));
 
@@ -250,12 +250,10 @@ static int server_init(server *s) {
     return 0;
 }
 
+/*
 // TODO - NGTCP2 the struct sockaddr type
 static int server_await_message(server *s, struct iovec *iov, struct sockaddr *remote_addr, size_t remote_addrlen) {
-    /*
-    Waits for a message to be recieved on the fd saved in server, and saved the recieved data into iov
-    Also saves the sockaddr of the sender into remote_addr
-    */
+    
     struct pollfd conn_poll;
     
     struct msghdr msg;
@@ -288,11 +286,10 @@ static int server_await_message(server *s, struct iovec *iov, struct sockaddr *r
         fprintf(stderr, "Warning: Message data was truncated as it did not fit into the buffer\n");
     }
 
-    /*  If rv < 0, then error
-    *   If rv == 0, client has closed the connection
-    *   If rv > 0, read was success and rv bytes were read*/
+    
     return rv;
 }
+*/
 
 static int server_accept_connection(server *s, struct iovec *iov, ngtcp2_path *path) {
     ngtcp2_pkt_hd header;
@@ -319,6 +316,10 @@ static int server_accept_connection(server *s, struct iovec *iov, ngtcp2_path *p
     // Docs state the the original_dcid field must be set
     params.original_dcid = header.dcid;
     params.original_dcid_present = 1;
+
+    // TODO - Determine what other params are needed
+    params.initial_max_streams_uni = 3;
+    params.initial_max_streams_bidi = 3;
 
     // Server DCID is client SCID. 
     ngtcp2_cid scid;
@@ -365,8 +366,8 @@ static int server_read_step(server *s, uint8_t *buf, size_t bufsize) {
     rv = await_message(s->fd, &iov, &remote_addr, sizeof(remote_addr));
 
     if (rv == 0) {
-        fprintf(stdout, "Client closed connection\n");
-        return -1; // TODO - Change this return value. New error origin point
+        // fprintf(stdout, "Client closed connection\n");
+        return ERROR_NO_NEW_MESSAGE;
     } else if (rv < 0) {
         return rv;
     }
@@ -532,7 +533,7 @@ int main(int argc, char **argv) {
 
     while (1) {
         rv = server_read_step(&s, buf, sizeof(buf));
-        if (rv != 0) {
+        if (rv != 0 && rv != ERROR_NO_NEW_MESSAGE) {
             return rv;
         }
 

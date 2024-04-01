@@ -23,6 +23,10 @@ int prepare_packet(ngtcp2_conn *conn, uint64_t stream_id, size_t *pktlen, struct
 
     ngtcp2_path_storage_zero(&ps);
 
+    if (stream_id != -1) {
+        printf("Writing to stream id: %ld\n", stream_id);
+    }
+
     // TODO - Apparently need to make a call to ngtcp2_conn_update_pkt_tx_time after writev_stream
     // Need to cast *iov to (ngtcp2_vec*). Apparently safe: https://nghttp2.org/ngtcp2/types.html#c.ngtcp2_vec
     rv = ngtcp2_conn_writev_stream(conn, &ps.path, &pi, buf, sizeof(buf), &wdatalen, NGTCP2_WRITE_STREAM_FLAG_NONE, stream_id, (ngtcp2_vec*) iov, iov_count, ts);
@@ -32,11 +36,13 @@ int prepare_packet(ngtcp2_conn *conn, uint64_t stream_id, size_t *pktlen, struct
     }
 
     if (rv == 0) {
-        // TODO - If rv == 0, buffer is too small or packet is congestion limited. Handle this case
-        ;
+        fprintf(stderr, "Warning: Buffer to prepare packet into too small or packet is congestion limited\n");
     }
 
     *pktlen = rv;
+
+    // TODO - Determine if this is needed
+    ngtcp2_conn_update_pkt_tx_time(conn, ts);
 
     return 0;
 }
