@@ -10,9 +10,9 @@
 #include "utils.h"
 
 // buffer is allocated to hold and pass packets being encoded/decoded
-uint8_t buf[BUF_SIZE];
+// uint8_t buf[BUF_SIZE];
 
-int prepare_packet(ngtcp2_conn *conn, uint64_t stream_id, size_t *pktlen, struct iovec *iov, size_t iov_count) {
+int prepare_packet(ngtcp2_conn *conn, uint64_t stream_id, uint8_t* buf, size_t buflen, size_t *pktlen, struct iovec *iov) {
     // Write stream prepares the message to be sent into buf and returns size of the message
     ngtcp2_tstamp ts = timestamp();
     ngtcp2_pkt_info pi;
@@ -29,7 +29,7 @@ int prepare_packet(ngtcp2_conn *conn, uint64_t stream_id, size_t *pktlen, struct
 
     // TODO - Apparently need to make a call to ngtcp2_conn_update_pkt_tx_time after writev_stream
     // Need to cast *iov to (ngtcp2_vec*). Apparently safe: https://nghttp2.org/ngtcp2/types.html#c.ngtcp2_vec
-    rv = ngtcp2_conn_writev_stream(conn, &ps.path, &pi, buf, sizeof(buf), &wdatalen, NGTCP2_WRITE_STREAM_FLAG_NONE, stream_id, (ngtcp2_vec*) iov, iov_count, ts);
+    rv = ngtcp2_conn_writev_stream(conn, &ps.path, &pi, buf, buflen, &wdatalen, NGTCP2_WRITE_STREAM_FLAG_NONE, stream_id, (ngtcp2_vec*) iov, 1, ts);
     if (rv < 0) {
         fprintf(stderr, "Trying to write to stream failed: %s\n", ngtcp2_strerror(rv));
         return rv;
@@ -47,7 +47,7 @@ int prepare_packet(ngtcp2_conn *conn, uint64_t stream_id, size_t *pktlen, struct
     return 0;
 }
 
-int send_packet(int fd, size_t pktlen) {
+int send_packet(int fd, uint8_t* pkt, size_t pktlen) {
     struct iovec msg_iov;
     struct msghdr msg;
 
@@ -56,7 +56,7 @@ int send_packet(int fd, size_t pktlen) {
     int rv;
 
     // Assume that there is a packet to be sent in the global buf array
-    msg_iov.iov_base = buf;
+    msg_iov.iov_base = pkt;
     msg_iov.iov_len = pktlen;
 
     msg.msg_iov = &msg_iov;

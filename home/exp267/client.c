@@ -10,7 +10,7 @@
 #include "connection.h"
 
 // Globally accessable buffer to pass packets for encode/decode
-uint8_t buf[BUF_SIZE];
+// uint8_t buf[BUF_SIZE];
 
 static int handshake_completed_cb(ngtcp2_conn* conn, void* user_data) {
     fprintf(stdout, "Successfully completed handshake\n");
@@ -360,21 +360,20 @@ static int client_write_step(client *c, uint8_t *data, size_t datalen) {
     size_t pktlen;
     
     struct iovec iov;
-    size_t iov_count;
 
     int rv;
+
+    uint8_t buf[BUF_SIZE];
 
     iov.iov_base = data;
     iov.iov_len = datalen;
 
-    iov_count = 1;
-
-    rv = prepare_packet(c->conn, c->stream_id, &pktlen, &iov, iov_count);
+    rv = prepare_packet(c->conn, c->stream_id, buf, sizeof(buf), &pktlen, &iov);
     if (rv != 0) {
         return rv;
     }
 
-    rv = send_packet(c->fd, pktlen);
+    rv = send_packet(c->fd, buf, pktlen);
 
     if (rv != 0) {
         return rv;
@@ -389,6 +388,8 @@ static int client_read_step(client *c) {
     struct sockaddr remote_addr;
     struct iovec iov;
     ngtcp2_version_cid version;
+
+    uint8_t buf[BUF_SIZE];
 
     int rv;
 

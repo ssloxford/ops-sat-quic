@@ -14,7 +14,7 @@
 #include "connection.h"
 
 // Globally accessable buffer to store/pass packets after encode/decode
-uint8_t buf[BUF_SIZE];
+// uint8_t buf[BUF_SIZE];
 
 static int handshake_completed_cb(ngtcp2_conn* conn, void* user_data) {
     fprintf(stdout, "Successfully completed handshake\n");
@@ -349,18 +349,20 @@ static int server_accept_connection(server *s, struct iovec *iov, ngtcp2_path *p
     return 0;
 }
 
-static int server_read_step(server *s, uint8_t *buf, size_t bufsize) {
+static int server_read_step(server *s) {
     struct sockaddr remote_addr;
     struct iovec iov;
     ngtcp2_version_cid version;
 
     int rv;
 
+    uint8_t buf[BUF_SIZE];
+
     size_t pktlen;
 
     // Must allocate space to save the incoming data into and set the pointer
     iov.iov_base = buf;
-    iov.iov_len = bufsize;
+    iov.iov_len = sizeof(buf);
 
     // Blocking call
     rv = await_message(s->fd, &iov, &remote_addr, sizeof(remote_addr));
@@ -372,9 +374,9 @@ static int server_read_step(server *s, uint8_t *buf, size_t bufsize) {
         return rv;
     }
 
-    pktlen = rv;
-
     // If rv>0, server_await_message successfully read rv bytes
+
+    pktlen = rv;
 
     rv = ngtcp2_pkt_decode_version_cid(&version, iov.iov_base, pktlen, NGTCP2_MAX_CIDLEN);
     if (rv != 0) {
@@ -418,6 +420,7 @@ static int server_read_step(server *s, uint8_t *buf, size_t bufsize) {
     return 0;
 }
 
+/*
 // TODO - Function is the same as the client one. How do we improve this?
 // Could move it into utils/new file and take *conn and streamid rather than *s
 static int server_prepare_packet(server *s, uint8_t *buf, size_t bufsize, size_t *pktlen, struct iovec *iov, size_t iov_count) {
@@ -448,7 +451,9 @@ static int server_prepare_packet(server *s, uint8_t *buf, size_t bufsize, size_t
 
     return 0;
 }
+*/
 
+/*
 // TODO - As above - Same as client_send_packet
 static int server_send_packet(server *s, uint8_t *pkt, size_t pktlen) {
     struct iovec msg_iov;
@@ -478,28 +483,29 @@ static int server_send_packet(server *s, uint8_t *pkt, size_t pktlen) {
 
     return 0;
 }
+*/
 
-static int server_write_step(server *s, uint8_t *data, size_t datalen, uint8_t *buf, size_t bufsize) {
+static int server_write_step(server *s, uint8_t *data, size_t datalen) {
     // Data and datalen is the data to be written
     // Buf and bufsize is a general use memory allocation (eg. to pass packets to subroutines)
     size_t pktlen;
     struct iovec iov;
 
     // TODO - WHY DOES DECLARING THIS ARRAY AFFECT BUF
-    // uint8_t dummy[BUF_SIZE];
+    uint8_t buf[BUF_SIZE];
 
     int rv;
 
     iov.iov_base = data;
     iov.iov_len = datalen;
 
-    rv = server_prepare_packet(s, buf, bufsize, &pktlen, &iov, 1);
+    rv = prepare_packet(s->conn, s->stream_id, buf, sizeof(buf), &pktlen, &iov);
 
     if (rv != 0) {
         return rv;
     }
 
-    rv = server_send_packet(s, buf, pktlen);
+    rv = send_packet(s->fd, buf, pktlen);
     if (rv != 0) {
         return rv;
     }
@@ -532,12 +538,12 @@ int main(int argc, char **argv) {
     // Server struct has fd, localaddr, ssl, callbacks and settings assigned
 
     while (1) {
-        rv = server_read_step(&s, buf, sizeof(buf));
+        rv = server_read_step(&s);
         if (rv != 0 && rv != ERROR_NO_NEW_MESSAGE) {
             return rv;
         }
 
-        rv = server_write_step(&s, message, sizeof(message), buf, sizeof(buf));
+        rv = server_write_step(&s, message, sizeof(message));
         if (rv != 0) {
             return rv;
         }
