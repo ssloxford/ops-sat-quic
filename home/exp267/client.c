@@ -76,8 +76,6 @@ static int client_resolve_and_connect(client *c, const char *target_host, const 
     // Look for available IPv4 UDP endpoints
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_DGRAM;
-    // Should be redundant
-    hints.ai_protocol = 0;
 
     rv = getaddrinfo(target_host, target_port, &hints, &result);
     if (rv != 0) {
@@ -99,7 +97,7 @@ static int client_resolve_and_connect(client *c, const char *target_host, const 
             c->remotelen = rp->ai_addrlen;
             memcpy(&c->remotesock, rp->ai_addr, rp->ai_addrlen);
 
-            // Find the local address and copy that into path
+            // Set the local path of the client
             socklen_t len = sizeof(c->localsock);
             if (getsockname(fd, &c->localsock, &len) == -1)
                 return ERROR_GET_SOCKNAME;
@@ -190,7 +188,6 @@ static int client_ngtcp2_init(client *c, char* server_ip) {
     ngtcp2_transport_params_default(&params);
 
     params.initial_max_streams_uni = 3;
-    // TODO - Do I need to set max_data?
     params.initial_max_stream_data_uni = BUF_SIZE;
     params.initial_max_data = BUF_SIZE;
 
@@ -207,7 +204,7 @@ static int client_ngtcp2_init(client *c, char* server_ip) {
         return ERROR_DCID_GEN;
     }
 
-    // Resolve provided hostname and port, and create a socket connected to it. Return fd of socket
+    // Resolve provided hostname and port, and create a socket connected to it
     rv = client_resolve_and_connect(c, server_ip, SERVER_PORT);
     if (rv != 0) {
         fprintf(stderr, "Failed to resolve and connect to target socket: %d\n", rv);
@@ -229,7 +226,7 @@ static int client_ngtcp2_init(client *c, char* server_ip) {
     rv = ngtcp2_conn_client_new(&c->conn, &dcid, &scid, &path, NGTCP2_PROTO_VER_V1, &callbacks, &settings, &params, NULL, c);
 
     if (rv != 0) {
-        fprintf(stderr, "FAILED TO CREATE NEW CONN!");
+        fprintf(stderr, "Failed to create new client connection: %s\n", ngtcp2_strerror(rv));
         return rv;
     }
 
@@ -246,7 +243,6 @@ static ngtcp2_conn* get_conn (ngtcp2_crypto_conn_ref* ref) {
 static int client_init(client *c, char* server_ip) {
     int rv;
 
-    // Function from utils
     c->ref.get_conn = get_conn;
     c->ref.user_data = c;
 
@@ -261,73 +257,12 @@ static int client_init(client *c, char* server_ip) {
 
     rv = client_ngtcp2_init(c, server_ip);
     if (rv != 0) {
-        fprintf(stderr, "Failed to initialise ngtcp2 connection\n");
+        fprintf(stderr, "Failed to initialise ngtcp2 connection: %s\n", ngtcp2_strerror(rv));
         return rv;
     }
 
     return 0;
 }
-
-/*
-static int client_prepare_packet(client *c, size_t *pktlen, struct iovec *iov, size_t iov_count) {
-    // Write stream prepares the message to be sent into buf and returns size of the message
-    ngtcp2_tstamp ts = timestamp();
-    ngtcp2_pkt_info pi;
-    ngtcp2_path_storage ps;
-    ngtcp2_ssize wdatalen; // wdatalen is the length of data within STREAM (data) frames only
-
-    int rv;
-
-    ngtcp2_path_storage_zero(&ps);
-
-    // TODO - Apparently need to make a call to ngtcp2_conn_update_pkt_tx_time after writev_stream
-    // Need to cast *iov to (ngtcp2_vec*). Apparently safe: https://nghttp2.org/ngtcp2/types.html#c.ngtcp2_vec
-    rv = ngtcp2_conn_writev_stream(c->conn, &ps.path, &pi, buf, sizeof(buf), &wdatalen, NGTCP2_WRITE_STREAM_FLAG_NONE, c->stream_id, (ngtcp2_vec*) iov, iov_count, ts);
-    if (rv < 0) {
-        fprintf(stderr, "Trying to write to stream failed: %s\n", ngtcp2_strerror(rv));
-        return rv;
-    }
-
-    if (rv == 0) {
-        // TODO - If rv == 0, buffer is too small or packet is congestion limited. Handle this case
-        ;
-    }
-
-    *pktlen = rv;
-
-    return 0;
-}
-*/
-
-/*
-static int client_send_packet(client *c, size_t pktlen) {
-    struct iovec msg_iov;
-    struct msghdr msg;
-
-    int rv;
-
-    // Assume that there is a packet to be sent in the global buf array
-    msg_iov.iov_base = buf;
-    msg_iov.iov_len = pktlen;
-
-    msg.msg_iov = &msg_iov;
-    msg.msg_iovlen = 1;
-
-    // TODO - Maybe poll to wait for the fd to be ready to write
-
-    // TODO - Look into flags
-    rv = sendmsg(c->fd, &msg, 0);
-
-    // On success rv > 0 is the number of bytes sent
-
-    if (rv == -1) {
-        fprintf(stderr, "sendmsg: %s\n", strerror(errno));
-        return rv;
-    }
-
-    return 0;
-}
-*/
 
 static int client_write_step(client *c, uint8_t *data, size_t datalen) {
     size_t pktlen;
@@ -347,7 +282,6 @@ static int client_write_step(client *c, uint8_t *data, size_t datalen) {
     }
 
     rv = send_packet(c->fd, buf, pktlen);
-
     if (rv != 0) {
         return rv;
     }
@@ -355,8 +289,6 @@ static int client_write_step(client *c, uint8_t *data, size_t datalen) {
     return 0;
 }
 
-
-// TODO - Same as server. Try bringing it into connection.c
 static int client_read_step(client *c) {
     struct sockaddr remote_addr;
     struct iovec iov;
@@ -373,30 +305,26 @@ static int client_read_step(client *c) {
     iov.iov_len = sizeof(buf);
 
     // Blocking call
-    rv = await_message(c->fd, &iov, &remote_addr, sizeof(remote_addr));
+    rv = await_message(c->fd, &iov, &remote_addr, sizeof(remote_addr), &pktlen);
 
-    if (rv == 0) {
-        return ERROR_NO_NEW_MESSAGE;
-    } else if (rv < 0) {
+    if (rv != 0) {
         return rv;
     }
 
-    pktlen = rv;
-
-    // If rv>0, server_await_message successfully read rv bytes
-    // TODO - Determine if we need this value
-    // If iov.iov_len == rv, then it's not needed and we can make await_message work with error vals
+    // TODO - pktlen will be 0 when client has closed connection?
+    if (pktlen == 0) {
+        return ERROR_NO_NEW_MESSAGE;
+    }
 
     rv = ngtcp2_pkt_decode_version_cid(&version, iov.iov_base, pktlen, NGTCP2_MAX_CIDLEN);
     if (rv != 0) {
-        fprintf(stderr, "Failed to decode version cid: \n");
+        fprintf(stderr, "Failed to decode version cid: %s\n", ngtcp2_strerror(rv));
         return rv;
     }
 
     // If got to here, the packet recieved is an acceptable QUIC packet
 
     // remoteaddr populated by await_message
-    // TODO - Assert that remoteaddr is the same as the one saved in c
     ngtcp2_path path = {
         .local = {
             .addr = &c->localsock,
@@ -410,9 +338,6 @@ static int client_read_step(client *c) {
 
     // General actions on the packet (including processing incoming handshake on conn if incomplete)
     rv = ngtcp2_conn_read_pkt(c->conn, &path, NULL, iov.iov_base, pktlen, timestamp());
-
-    // TODO - Find where the payload goes? Is it one of the callbacks?
-    // recv_stream_data? https://nghttp2.org/ngtcp2/types.html#c.ngtcp2_recv_stream_data
 
     if (rv != 0) {
         fprintf(stderr, "Failed to read packet: %s\n", ngtcp2_strerror(rv));
@@ -458,7 +383,7 @@ int main(int argc, char **argv){
 
         rv = client_read_step(&c);
         
-        if (rv != 0 && rv != ERROR_NO_NEW_MESSAGE) {
+        if (rv != 0) {
             return rv;
         }
     }

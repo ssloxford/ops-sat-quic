@@ -79,18 +79,15 @@ static int server_wolfssl_init(server *s) {
         return ERROR_WOLFSSL_SETUP;
     }
 
-    // TODO - Look into further ssl setup
     wolfSSL_set_app_data(s->ssl, &s->ref);
     wolfSSL_set_accept_state(s->ssl);
-
-    // Set cipher suites?
 
     return 0;
 }
 
-static int server_settings_init(server *s) {
+static int server_settings_init(ngtcp2_callbacks *callbacks, ngtcp2_settings *settings) {
     // Similar to client.c. Removed unnecessary recv_retry callback
-    ngtcp2_callbacks callbacks = {
+    ngtcp2_callbacks local_callbacks = {
         NULL,
         ngtcp2_crypto_recv_client_initial_cb, /* recv_client_initial */
         ngtcp2_crypto_recv_crypto_data_cb,
@@ -133,49 +130,34 @@ static int server_settings_init(server *s) {
         NULL, /* early_data_rejected */
     };
 
-    s->callbacks = malloc(sizeof(callbacks));
+    memcpy(callbacks, &local_callbacks, sizeof(local_callbacks));
 
-    if (s->callbacks == NULL) {
-        return ERROR_OUT_OF_MEMORY;
-    }
-
-    // Copy the callbacks structure into the allocated memory
-    memcpy(s->callbacks, &callbacks, sizeof(callbacks));
-
-    ngtcp2_settings settings;
-
-    ngtcp2_settings_default(&settings);
-    settings.initial_ts = timestamp();
-    // settings.log_printf = debug_log; // Allows ngtcp2 debug
-
-    s->settings = malloc(sizeof(settings));
-
-    if (s->settings == NULL) {
-        return ERROR_OUT_OF_MEMORY;
-    }
-
-    memcpy(s->settings, &settings, sizeof(settings));
+    ngtcp2_settings_default(settings);
+    settings->initial_ts = timestamp();
+    // settings->log_printf = debug_log; // Allows ngtcp2 debug
 
     return 0;
 }
 
-// TODO - Comment function and provide acknowledgement
+// Function code taken mostly from spaceQUIC
 static int server_resolve_and_bind(server *s, const char *server_port) {
-
     struct addrinfo hints;
     struct addrinfo *result, *rp;
     int ret, fd;
 
+    // Documentation requires hints to be cleared
     memset(&hints, 0, sizeof(hints));
-    // TODO - Understand these fields
+    
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_DGRAM;
     hints.ai_flags = AI_PASSIVE;
 
+    // INADDR_ANY opens the port to all IPv4 sources
     ret = getaddrinfo(INADDR_ANY, server_port, &hints, &result);
     if (ret != 0)
         return ERROR_HOST_LOOKUP;
 
+    // For each potential localaddr, attempt to open a fd and bind the address
     for (rp = result; rp != NULL; rp = rp->ai_next) {
         fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
         if (fd == -1)
@@ -187,12 +169,15 @@ static int server_resolve_and_bind(server *s, const char *server_port) {
             break;
         }
 
+        // If the bind failed, close the fd
         close(fd);
     }
 
+    // Manually deallocate the generated addresses
     freeaddrinfo(result);
 
     if (rp == NULL)
+    // TODO - Need a new error code
         return -1;
 
     s->fd = fd;
@@ -225,59 +210,14 @@ static int server_init(server *s) {
         return rv;
     }
 
-    rv = server_settings_init(s);
-
-    if (rv != 0) {
-        return rv;
-    }
-
     return 0;
 }
-
-/*
-// TODO - NGTCP2 the struct sockaddr type
-static int server_await_message(server *s, struct iovec *iov, struct sockaddr *remote_addr, size_t remote_addrlen) {
-    
-    struct pollfd conn_poll;
-    
-    struct msghdr msg;
-
-    int rv;
-
-    // Create socket polling
-    conn_poll.fd = s->fd;
-    conn_poll.events = POLLIN;
-
-    // Clear message structure
-    memset(&msg, 0, sizeof(msg));
-
-    // Sents the fields where the senders address will be saved to by recvmsg
-    msg.msg_name = remote_addr;
-    msg.msg_namelen = remote_addrlen;
-
-    // msg_iov is an array of iovecs to write the recieved message into. msg_iovlen is the size of that array.
-    msg.msg_iov = iov;
-    msg.msg_iovlen = 1;
-
-    // Waits for the fd saved to the server to be ready to read. No timeout
-    poll(&conn_poll, 1, -1);
-    
-    // TODO - Think about flags here. https://pubs.opengroup.org/onlinepubs/009695399/functions/recvmsg.html
-    rv = recvmsg(s->fd, &msg, 0);
-
-    // Warning when buffer is not big enough to store the recieved message
-    if (msg.msg_flags & MSG_TRUNC) {
-        fprintf(stderr, "Warning: Message data was truncated as it did not fit into the buffer\n");
-    }
-
-    
-    return rv;
-}
-*/
 
 static int server_accept_connection(server *s, struct iovec *iov, ngtcp2_path *path) {
     ngtcp2_pkt_hd header;
     ngtcp2_transport_params params;
+    ngtcp2_settings settings;
+    ngtcp2_callbacks callbacks;
 
     int rv;
 
@@ -296,6 +236,8 @@ static int server_accept_connection(server *s, struct iovec *iov, ngtcp2_path *p
 
     // First packet is acceptable, so create the ngtcp2_conn
     ngtcp2_transport_params_default(&params);
+
+    server_settings_init(&callbacks, &settings);
 
     // Docs state the the original_dcid field must be set
     params.original_dcid = header.dcid;
@@ -316,7 +258,7 @@ static int server_accept_connection(server *s, struct iovec *iov, ngtcp2_path *p
         return -1; // TODO - New error code
     }
 
-    rv = ngtcp2_conn_server_new(&s->conn, &header.scid, &scid, path, header.version, s->callbacks, s->settings, &params, NULL, s);
+    rv = ngtcp2_conn_server_new(&s->conn, &header.scid, &scid, path, header.version, &callbacks, &settings, &params, NULL, s);
 
     ngtcp2_conn_set_tls_native_handle(s->conn, s->ssl);
 
@@ -329,7 +271,7 @@ static int server_accept_connection(server *s, struct iovec *iov, ngtcp2_path *p
 
     if (rv != 0) {
         fprintf(stderr, "Failed to add connection to fd\n");
-        return rv;
+        return rv; // TODO - Make a new error code
     }
 
     s->connected = 1;
@@ -352,17 +294,15 @@ static int server_read_step(server *s) {
     iov.iov_len = sizeof(buf);
 
     // Blocking call
-    rv = await_message(s->fd, &iov, &remote_addr, sizeof(remote_addr));
+    rv = await_message(s->fd, &iov, &remote_addr, sizeof(remote_addr), &pktlen);
 
-    if (rv == 0) {
-        return ERROR_NO_NEW_MESSAGE;
-    } else if (rv < 0) {
+    if (rv != 0) {
         return rv;
     }
 
-    // If rv>0, server_await_message successfully read rv bytes
-
-    pktlen = rv;
+    if (pktlen == 0) {
+        return ERROR_NO_NEW_MESSAGE;
+    }
 
     rv = ngtcp2_pkt_decode_version_cid(&version, iov.iov_base, pktlen, NGTCP2_MAX_CIDLEN);
     if (rv != 0) {
@@ -395,9 +335,6 @@ static int server_read_step(server *s) {
     // General actions on the packet (including processing incoming handshake on conn if incomplete)
     rv = ngtcp2_conn_read_pkt(s->conn, &path, NULL, iov.iov_base, pktlen, timestamp());
 
-    // TODO - Find where the payload goes? Is it one of the callbacks?
-    // recv_stream_data? https://nghttp2.org/ngtcp2/types.html#c.ngtcp2_recv_stream_data
-
     if (rv != 0) {
         fprintf(stderr, "Failed to read packet: %s\n", ngtcp2_strerror(rv));
         return rv;
@@ -406,78 +343,12 @@ static int server_read_step(server *s) {
     return 0;
 }
 
-/*
-// TODO - Function is the same as the client one. How do we improve this?
-// Could move it into utils/new file and take *conn and streamid rather than *s
-static int server_prepare_packet(server *s, uint8_t *buf, size_t bufsize, size_t *pktlen, struct iovec *iov, size_t iov_count) {
-    // Write stream prepares the message to be sent into buf and returns size of the message
-    ngtcp2_tstamp ts = timestamp();
-    ngtcp2_pkt_info pi;
-    ngtcp2_path_storage ps;
-    ngtcp2_ssize wdatalen;
-
-    int rv;
-
-    ngtcp2_path_storage_zero(&ps);
-
-    // TODO - Apparently need to make a call to ngtcp2_conn_update_pkt_tx_time after writev_stream
-    // Need to cast *iov to (ngtcp2_vec*). Apparently safe: https://nghttp2.org/ngtcp2/types.html#c.ngtcp2_vec
-    rv = ngtcp2_conn_writev_stream(s->conn, &ps.path, &pi, buf, bufsize, &wdatalen, NGTCP2_WRITE_STREAM_FLAG_NONE, s->stream_id, (ngtcp2_vec*) iov, iov_count, ts);
-    if (rv < 0) {
-        fprintf(stderr, "Trying to write to stream failed: %s\n", ngtcp2_strerror(rv));
-        return rv;
-    }
-
-    if (rv == 0) {
-        // TODO - If rv == 0, buffer is too small or packet is congestion limited. Handle this case
-        ;
-    }
-
-    *pktlen = rv;
-
-    return 0;
-}
-*/
-
-/*
-// TODO - As above - Same as client_send_packet
-static int server_send_packet(server *s, uint8_t *pkt, size_t pktlen) {
-    struct iovec msg_iov;
-    struct msghdr msg;
-
-    memset(&msg, 0, sizeof(msg));
-
-    int rv;
-
-    msg_iov.iov_base = pkt;
-    msg_iov.iov_len = pktlen;
-
-    msg.msg_iov = &msg_iov;
-    msg.msg_iovlen = 1;
-
-    // TODO - Maybe poll to wait for the fd to be ready to write
-
-    // TODO - Look into flags
-    rv = sendmsg(s->fd, &msg, 0);
-
-    // On success rv > 0 is the number of bytes sent
-
-    if (rv == -1) {
-        fprintf(stderr, "sendmsg: %s\n", strerror(errno));
-        return rv;
-    }
-
-    return 0;
-}
-*/
-
 static int server_write_step(server *s, uint8_t *data, size_t datalen) {
     // Data and datalen is the data to be written
     // Buf and bufsize is a general use memory allocation (eg. to pass packets to subroutines)
     size_t pktlen;
     struct iovec iov;
 
-    // TODO - WHY DOES DECLARING THIS ARRAY AFFECT BUF
     uint8_t buf[BUF_SIZE];
 
     int rv;
@@ -512,16 +383,11 @@ int main(int argc, char **argv) {
 
     uint8_t message[] = "Hello client!";
 
-    // Server settings and parameters
-    ngtcp2_transport_params params;
-    ngtcp2_settings settings;
-
+    // Allocates the fd to listen for connections, and sets up the wolfSSL backend
     rv = server_init(&s);
     if (rv != 0) {
         return rv;
     }
-
-    // Server struct has fd, localaddr, ssl, callbacks and settings assigned
 
     while (1) {
         rv = server_read_step(&s);

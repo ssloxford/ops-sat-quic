@@ -18,7 +18,4 @@ typedef struct _server {
 
     WOLFSSL* ssl;
     WOLFSSL_CTX* ctx;
-
-    ngtcp2_callbacks *callbacks;
-    ngtcp2_settings *settings;
 } server;

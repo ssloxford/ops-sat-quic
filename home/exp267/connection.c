@@ -9,9 +9,6 @@
 #include "connection.h"
 #include "utils.h"
 
-// buffer is allocated to hold and pass packets being encoded/decoded
-// uint8_t buf[BUF_SIZE];
-
 int prepare_packet(ngtcp2_conn *conn, uint64_t stream_id, uint8_t* buf, size_t buflen, size_t *pktlen, struct iovec *iov) {
     // Write stream prepares the message to be sent into buf and returns size of the message
     ngtcp2_tstamp ts = timestamp();
@@ -23,7 +20,6 @@ int prepare_packet(ngtcp2_conn *conn, uint64_t stream_id, uint8_t* buf, size_t b
 
     ngtcp2_path_storage_zero(&ps);
 
-    // TODO - Apparently need to make a call to ngtcp2_conn_update_pkt_tx_time after writev_stream
     // Need to cast *iov to (ngtcp2_vec*). Apparently safe: https://nghttp2.org/ngtcp2/types.html#c.ngtcp2_vec
     rv = ngtcp2_conn_writev_stream(conn, &ps.path, &pi, buf, buflen, &wdatalen, NGTCP2_WRITE_STREAM_FLAG_NONE, stream_id, (ngtcp2_vec*) iov, 1, ts);
     if (rv < 0) {
@@ -35,10 +31,8 @@ int prepare_packet(ngtcp2_conn *conn, uint64_t stream_id, uint8_t* buf, size_t b
         fprintf(stderr, "Warning: Buffer to prepare packet into too small or packet is congestion limited\n");
     }
 
+    // Update pktlen with the length of the produced packet
     *pktlen = rv;
-
-    // TODO - Determine if this is needed
-    ngtcp2_conn_update_pkt_tx_time(conn, ts);
 
     return 0;
 }
@@ -58,9 +52,7 @@ int send_packet(int fd, uint8_t* pkt, size_t pktlen) {
     msg.msg_iov = &msg_iov;
     msg.msg_iovlen = 1;
 
-    // TODO - Maybe poll to wait for the fd to be ready to write
-
-    // TODO - Look into flags
+    // Don't need to poll ready to write since UDP sockets are connectinless, so can always write
     rv = sendmsg(fd, &msg, 0);
 
     // On success rv > 0 is the number of bytes sent
@@ -73,11 +65,7 @@ int send_packet(int fd, uint8_t* pkt, size_t pktlen) {
     return 0;
 }
 
-int await_message(int fd, struct iovec *iov, struct sockaddr *remote_addr, size_t remote_addrlen) {
-    /*
-    Waits for a message to be recieved on the fd saved in server, and saved the recieved data into iov
-    Also saves the sockaddr of the sender into remote_addr
-    */
+int await_message(int fd, struct iovec *iov, struct sockaddr *remote_addr, size_t remote_addrlen, size_t *bytes_read) {
     struct pollfd conn_poll;
     
     struct msghdr msg;
@@ -115,8 +103,7 @@ int await_message(int fd, struct iovec *iov, struct sockaddr *remote_addr, size_
         fprintf(stderr, "Warning: Message data was truncated as it did not fit into the buffer\n");
     }
 
-    /*  If rv < 0, then error
-    *   If rv == 0, client has closed the connection
-    *   If rv > 0, read was success and rv bytes were read*/
-    return rv;
+    *bytes_read = rv;
+
+    return 0;
 }
