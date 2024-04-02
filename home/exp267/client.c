@@ -152,7 +152,7 @@ static int client_resolve_and_connect(client *c, const char *target_host, const 
     return 0;
 }
 
-static int client_ngtcp2_init(client *c) {
+static int client_ngtcp2_init(client *c, char* server_ip) {
     struct ngtcp2_settings settings;
     struct ngtcp2_transport_params params;
 
@@ -233,7 +233,7 @@ static int client_ngtcp2_init(client *c) {
     }
 
     // Resolve provided hostname and port, and create a socket connected to it. Return fd of socket
-    rv = client_resolve_and_connect(c, DEFAULT_IP, SERVER_PORT);
+    rv = client_resolve_and_connect(c, server_ip, SERVER_PORT);
     if (rv != 0) {
         fprintf(stderr, "Failed to resolve and connect to target socket: %d\n", rv);
         return rv;
@@ -268,7 +268,7 @@ static ngtcp2_conn* get_conn (ngtcp2_crypto_conn_ref* ref) {
     return c->conn;
 }
 
-static int client_init(client *c) {
+static int client_init(client *c, char* server_ip) {
     int rv;
 
     // Function from utils
@@ -287,7 +287,7 @@ static int client_init(client *c) {
 
     fprintf(stdout, "Successfully created wolfSSL instance\n");
 
-    rv = client_ngtcp2_init(c);
+    rv = client_ngtcp2_init(c, server_ip);
     if (rv != 0) {
         fprintf(stderr, "Failed to initialise ngtcp2 connection\n");
         return rv;
@@ -464,7 +464,14 @@ int main(int argc, char **argv){
 
     uint8_t message[] = "Hello server!";
 
-    rv = client_init(&c);
+    char *server_ip = DEFAULT_IP;
+
+    if (argc > 1) {
+        // User has provided an IP to connect to
+        server_ip = argv[1];
+    }
+
+    rv = client_init(&c, server_ip);
 
     // If client init failed, propagate error
     if (rv != 0) {

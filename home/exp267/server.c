@@ -172,10 +172,7 @@ static int server_settings_init(server *s) {
 }
 
 // TODO - Comment function and provide acknowledgement
-static int server_resolve_and_bind(server *s, const char *server_host, const char *server_port) {
-    // Server host is expected to be "127.0.0.1" aka "localhost"
-
-    // printf("Attempting to bind to %s:%s\n", server_host, server_port);
+static int server_resolve_and_bind(server *s, const char *server_port) {
 
     struct addrinfo hints;
     struct addrinfo *result, *rp;
@@ -187,7 +184,7 @@ static int server_resolve_and_bind(server *s, const char *server_host, const cha
     hints.ai_socktype = SOCK_DGRAM;
     hints.ai_flags = AI_PASSIVE;
 
-    ret = getaddrinfo(server_host, server_port, &hints, &result);
+    ret = getaddrinfo(INADDR_ANY, server_port, &hints, &result);
     if (ret != 0)
         return ERROR_HOST_LOOKUP;
 
@@ -236,7 +233,7 @@ static int server_init(server *s) {
         return rv;
     }
 
-    rv = server_resolve_and_bind(s, LOCAL_HOST, SERVER_PORT);
+    rv = server_resolve_and_bind(s, SERVER_PORT);
     if (rv != 0) {
         return rv;
     }
