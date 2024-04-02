@@ -317,9 +317,12 @@ static int server_accept_connection(server *s, struct iovec *iov, ngtcp2_path *p
     params.original_dcid = header.dcid;
     params.original_dcid_present = 1;
 
-    // TODO - Determine what other params are needed
+    // Allow up to 3 incoming unidirectional streams
     params.initial_max_streams_uni = 3;
-    params.initial_max_streams_bidi = 3;
+    // Can accept up to BUF_SIZE bytes at a time on uni streams
+    params.initial_max_stream_data_uni = BUF_SIZE;
+    // Will send up to BUF_SIZE bytes at a time
+    params.initial_max_data = BUF_SIZE;
 
     // Server DCID is client SCID. 
     ngtcp2_cid scid;

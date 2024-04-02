@@ -215,8 +215,9 @@ static int client_ngtcp2_init(client *c) {
     ngtcp2_transport_params_default(&params);
 
     params.initial_max_streams_uni = 3;
-    params.initial_max_streams_bidi = 3;
     // TODO - Do I need to set max_data?
+    params.initial_max_stream_data_uni = BUF_SIZE;
+    params.initial_max_data = BUF_SIZE;
 
     // Allocate random destination and source connection IDs
     dcid.datalen = NGTCP2_MIN_INITIAL_DCIDLEN;
