@@ -9,24 +9,7 @@
 #include "errors.h"
 #include "connection.h"
 
-// Globally accessable buffer to pass packets for encode/decode
-// uint8_t buf[BUF_SIZE];
-
-static int handshake_completed_cb(ngtcp2_conn* conn, void* user_data) {
-    fprintf(stdout, "Successfully completed handshake\n");
-
-    return 0;
-}
-
-static int handshake_confirmed_cb(ngtcp2_conn *conn, void *user_data) {
-    fprintf(stdout, "Successfully confirmed handshake\n");
-
-    return 0;
-}
-
 static int extend_max_local_streams_uni_cb(ngtcp2_conn *conn, uint64_t max_streams, void *user_data) {
-    fprintf(stdout, "Starting call to extend_max_local_streams_uni_cb\n");
-
     int64_t stream_id;
     int rv = ngtcp2_conn_open_uni_stream(conn, &stream_id, NULL);
     if (rv < 0) {
@@ -36,14 +19,6 @@ static int extend_max_local_streams_uni_cb(ngtcp2_conn *conn, uint64_t max_strea
 
     client *c = (client*) user_data;
     c->stream_id = stream_id;
-
-    fprintf(stdout, "Successfully opened new uni stream: %ld\n", stream_id);
-
-    return 0;
-}
-
-static int stream_open_cb(ngtcp2_conn *conn, int64_t stream_id, void *user_data) {
-    fprintf(stdout, "Server opened stream: %ld\n", stream_id);
 
     return 0;
 }
@@ -166,14 +141,14 @@ static int client_ngtcp2_init(client *c, char* server_ip) {
         ngtcp2_crypto_client_initial_cb,
         NULL, /* recv_client_initial */
         ngtcp2_crypto_recv_crypto_data_cb,
-        handshake_completed_cb, /* handshake_completed */ // Not provided by library
+        NULL, /* handshake_completed */
         NULL, /* recv_version_negotiation */
         ngtcp2_crypto_encrypt_cb,
         ngtcp2_crypto_decrypt_cb,
         ngtcp2_crypto_hp_mask_cb,
         recv_stream_data_cb, /* recv_stream_data */
         NULL, /* acked_stream_data_offset */
-        stream_open_cb, /* stream_open */
+        NULL, /* stream_open */
         NULL, /* stream_close */
         NULL, /* recv_stateless_reset */
         ngtcp2_crypto_recv_retry_cb,
@@ -190,7 +165,7 @@ static int client_ngtcp2_init(client *c, char* server_ip) {
         NULL, /* extend_max_remote_streams_uni */
         NULL, /* extend_max_stream_data */
         NULL, /* dcid_status */
-        handshake_confirmed_cb, /* handshake_confirmed */
+        NULL, /* handshake_confirmed */
         NULL, /* recv_new_token */
         ngtcp2_crypto_delete_crypto_aead_ctx_cb,
         ngtcp2_crypto_delete_crypto_cipher_ctx_cb,
@@ -283,9 +258,6 @@ static int client_init(client *c, char* server_ip) {
     if (rv != 0) {
         return rv;
     }
-
-
-    fprintf(stdout, "Successfully created wolfSSL instance\n");
 
     rv = client_ngtcp2_init(c, server_ip);
     if (rv != 0) {
@@ -404,7 +376,6 @@ static int client_read_step(client *c) {
     rv = await_message(c->fd, &iov, &remote_addr, sizeof(remote_addr));
 
     if (rv == 0) {
-        // fprintf(stdout, "No new messages\n");
         return ERROR_NO_NEW_MESSAGE;
     } else if (rv < 0) {
         return rv;

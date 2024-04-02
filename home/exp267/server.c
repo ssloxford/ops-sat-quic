@@ -13,17 +13,7 @@
 #include "server.h"
 #include "connection.h"
 
-// Globally accessable buffer to store/pass packets after encode/decode
-// uint8_t buf[BUF_SIZE];
-
-static int handshake_completed_cb(ngtcp2_conn* conn, void* user_data) {
-    fprintf(stdout, "Successfully completed handshake\n");
-    return 0;
-}
-
 static int extend_max_local_streams_uni_cb(ngtcp2_conn *conn, uint64_t max_streams, void *user_data) {
-    fprintf(stdout, "Attempting to open new uni stream\n");
-
     int64_t stream_id;
     int rv = ngtcp2_conn_open_uni_stream(conn, &stream_id, NULL);
     if (rv < 0) {
@@ -33,8 +23,6 @@ static int extend_max_local_streams_uni_cb(ngtcp2_conn *conn, uint64_t max_strea
 
     server *s = (server*) user_data;
     s->stream_id = stream_id;
-
-    fprintf(stdout, "Successfully opened new uni stream: %ld\n", stream_id);
 
     return 0;
 }
@@ -106,7 +94,7 @@ static int server_settings_init(server *s) {
         NULL,
         ngtcp2_crypto_recv_client_initial_cb, /* recv_client_initial */
         ngtcp2_crypto_recv_crypto_data_cb,
-        handshake_completed_cb, /* handshake_completed */
+        NULL, /* handshake_completed */
         NULL, /* recv_version_negotiation */
         ngtcp2_crypto_encrypt_cb,
         ngtcp2_crypto_decrypt_cb,
@@ -194,7 +182,6 @@ static int server_resolve_and_bind(server *s, const char *server_port) {
             continue;
 
         if (bind(fd, rp->ai_addr, rp->ai_addrlen) == 0) {
-            fprintf(stdout, "Opened and bound fd to socket data: %s\n", rp->ai_addr->sa_data);
             s->locallen = rp->ai_addrlen;
             memcpy(&s->localsock, rp->ai_addr, rp->ai_addrlen);
             break;
@@ -326,7 +313,7 @@ static int server_accept_connection(server *s, struct iovec *iov, ngtcp2_path *p
     scid.datalen = 8;
     if (rand_bytes(scid.data, scid.datalen) != 0) {
         fprintf(stderr, "Failed to populate server SCID\n");
-        return -1;
+        return -1; // TODO - New error code
     }
 
     rv = ngtcp2_conn_server_new(&s->conn, &header.scid, &scid, path, header.version, s->callbacks, s->settings, &params, NULL, s);
@@ -341,7 +328,7 @@ static int server_accept_connection(server *s, struct iovec *iov, ngtcp2_path *p
     rv = connect(s->fd, path->remote.addr, path->remote.addrlen);
 
     if (rv != 0) {
-        fprintf(stdout, "Failed to add connection to fd\n");
+        fprintf(stderr, "Failed to add connection to fd\n");
         return rv;
     }
 
@@ -368,7 +355,6 @@ static int server_read_step(server *s) {
     rv = await_message(s->fd, &iov, &remote_addr, sizeof(remote_addr));
 
     if (rv == 0) {
-        // fprintf(stdout, "Client closed connection\n");
         return ERROR_NO_NEW_MESSAGE;
     } else if (rv < 0) {
         return rv;

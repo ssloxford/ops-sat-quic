@@ -23,10 +23,6 @@ int prepare_packet(ngtcp2_conn *conn, uint64_t stream_id, uint8_t* buf, size_t b
 
     ngtcp2_path_storage_zero(&ps);
 
-    if (stream_id != -1) {
-        printf("Writing to stream id: %ld\n", stream_id);
-    }
-
     // TODO - Apparently need to make a call to ngtcp2_conn_update_pkt_tx_time after writev_stream
     // Need to cast *iov to (ngtcp2_vec*). Apparently safe: https://nghttp2.org/ngtcp2/types.html#c.ngtcp2_vec
     rv = ngtcp2_conn_writev_stream(conn, &ps.path, &pi, buf, buflen, &wdatalen, NGTCP2_WRITE_STREAM_FLAG_NONE, stream_id, (ngtcp2_vec*) iov, 1, ts);
