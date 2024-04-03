@@ -4,6 +4,8 @@
 
 int prepare_packet(ngtcp2_conn *conn, uint64_t stream_id, uint8_t* buf, size_t buflen, size_t *pktlen, struct iovec *iov);
 
+int prepare_nonstream_packet(ngtcp2_conn *conn, uint8_t *buf, size_t buflen, size_t *pktlen);
+
 int send_packet(int fd, uint8_t* pkt, size_t pktlen);
 
-int await_message(int fd, struct iovec *iov, struct sockaddr *remote_addr, size_t remote_addrlen, size_t *bytes_read);
+int read_message(int fd, uint8_t *buf, size_t buflen, struct sockaddr *remote_addr, size_t remote_addrlen, size_t *bytes_read);

@@ -18,4 +18,7 @@ typedef struct _server {
 
     WOLFSSL* ssl;
     WOLFSSL_CTX* ctx;
+
+    uint8_t *reply_data;
+    size_t reply_data_len;
 } server;

@@ -28,7 +28,12 @@ static int extend_max_local_streams_uni_cb(ngtcp2_conn *conn, uint64_t max_strea
 }
 
 static int recv_stream_data_cb(ngtcp2_conn *conn, uint32_t flags, int64_t stream_id, uint64_t offset, const uint8_t *data, size_t datalen, void *user_data, void *stream_user_data) {
-    fprintf(stdout, "Recieved stream data: %*s\n", (int) datalen, data);
+    fprintf(stdout, "Client sent: %*s\n", (int) datalen, data);
+
+    server *s = user_data;
+
+    memcpy(s->reply_data, data, datalen);
+    s->reply_data_len = datalen;
 
     return 0;
 }
@@ -213,7 +218,7 @@ static int server_init(server *s) {
     return 0;
 }
 
-static int server_accept_connection(server *s, struct iovec *iov, ngtcp2_path *path) {
+static int server_accept_connection(server *s, uint8_t *buf, size_t buflen, ngtcp2_path *path) {
     ngtcp2_pkt_hd header;
     ngtcp2_transport_params params;
     ngtcp2_settings settings;
@@ -228,7 +233,7 @@ static int server_accept_connection(server *s, struct iovec *iov, ngtcp2_path *p
 
     // Determine if the received first message is acceptable
     // If it is, write the data into the header structure
-    rv = ngtcp2_accept(&header, iov->iov_base, iov->iov_len);
+    rv = ngtcp2_accept(&header, buf, buflen);
     if (rv != 0) {
         fprintf(stderr, "First packet could not be parsed or was unacceptable\n");
         return rv;
@@ -280,7 +285,6 @@ static int server_accept_connection(server *s, struct iovec *iov, ngtcp2_path *p
 
 static int server_read_step(server *s) {
     struct sockaddr remote_addr;
-    struct iovec iov;
     ngtcp2_version_cid version;
 
     int rv;
@@ -289,55 +293,70 @@ static int server_read_step(server *s) {
 
     size_t pktlen;
 
-    // Must allocate space to save the incoming data into and set the pointer
-    iov.iov_base = buf;
-    iov.iov_len = sizeof(buf);
+    struct pollfd conn_poll;
 
-    // Blocking call
-    rv = await_message(s->fd, &iov, &remote_addr, sizeof(remote_addr), &pktlen);
+    // Create socket polling
+    conn_poll.fd = s->fd;
+    conn_poll.events = POLLIN;
 
-    if (rv != 0) {
+    // Waits for the fd saved to the server to be ready to read. No timeout
+    rv = poll(&conn_poll, 1, -1);
+
+    if (rv == -1) {
+        fprintf(stderr, "Poll error: %s\n", strerror(errno));
         return rv;
     }
 
-    if (pktlen == 0) {
-        return ERROR_NO_NEW_MESSAGE;
-    }
+    for (;;) {
+        rv = read_message(s->fd, buf, sizeof(buf), &remote_addr, sizeof(remote_addr), &pktlen);
 
-    rv = ngtcp2_pkt_decode_version_cid(&version, iov.iov_base, pktlen, NGTCP2_MAX_CIDLEN);
-    if (rv != 0) {
-        fprintf(stderr, "Could not decode packet version: %s\n", ngtcp2_strerror(rv));
-        return rv;
-    }
-
-    // If got to here, the packet recieved is an acceptable QUIC packet
-
-    // remoteaddr populated by server_await_message
-    ngtcp2_path path = {
-        .local = {
-            .addr = &s->localsock,
-            .addrlen = s->locallen,
-        },
-        .remote = {
-            .addr = &remote_addr,
-            .addrlen = sizeof(remote_addr),
+        if (rv == ERROR_NO_NEW_MESSAGE) {
+            return 0;
         }
-    };
 
-    // If we're not currently connected, try accepting the connection. If it works, procede with actioning the packet
-    if (!s->connected) {
-        rv = server_accept_connection(s, &iov, &path);
         if (rv != 0) {
             return rv;
         }
-    }
 
-    // General actions on the packet (including processing incoming handshake on conn if incomplete)
-    rv = ngtcp2_conn_read_pkt(s->conn, &path, NULL, iov.iov_base, pktlen, timestamp());
+        if (pktlen == 0) {
+            return ERROR_NO_NEW_MESSAGE;
+        }
 
-    if (rv != 0) {
-        fprintf(stderr, "Failed to read packet: %s\n", ngtcp2_strerror(rv));
-        return rv;
+        rv = ngtcp2_pkt_decode_version_cid(&version, buf, pktlen, NGTCP2_MAX_CIDLEN);
+        if (rv != 0) {
+            fprintf(stderr, "Could not decode packet version: %s\n", ngtcp2_strerror(rv));
+            return rv;
+        }
+
+        // If got to here, the packet recieved is an acceptable QUIC packet
+
+        // remoteaddr populated by server_await_message
+        ngtcp2_path path = {
+            .local = {
+                .addr = &s->localsock,
+                .addrlen = s->locallen,
+            },
+            .remote = {
+                .addr = &remote_addr,
+                .addrlen = sizeof(remote_addr),
+            }
+        };
+
+        // If we're not currently connected, try accepting the connection. If it works, procede with actioning the packet
+        if (!s->connected) {
+            rv = server_accept_connection(s, buf, sizeof(buf), &path);
+            if (rv != 0) {
+                return rv;
+            }
+        }
+
+        // General actions on the packet (including processing incoming handshake on conn if incomplete)
+        rv = ngtcp2_conn_read_pkt(s->conn, &path, NULL, buf, pktlen, timestamp());
+
+        if (rv != 0) {
+            fprintf(stderr, "Failed to read packet: %s\n", ngtcp2_strerror(rv));
+            return rv;
+        }
     }
 
     return 0;
@@ -356,15 +375,37 @@ static int server_write_step(server *s, uint8_t *data, size_t datalen) {
     iov.iov_base = data;
     iov.iov_len = datalen;
 
-    rv = prepare_packet(s->conn, s->stream_id, buf, sizeof(buf), &pktlen, &iov);
+    // Send any non-stream packets (eg. handshake)
+    for (;;) {
+        rv = prepare_nonstream_packet(s->conn, buf, sizeof(buf), &pktlen);
+        if (rv == ERROR_NO_NEW_MESSAGE) {
+            break;
+        }
 
-    if (rv != 0) {
-        return rv;
+        if (rv != 0) {
+            return rv;
+        }
+
+        rv = send_packet(s->fd, buf, pktlen);
+
+        if (rv != 0) {
+            return rv;
+        }
+
     }
 
-    rv = send_packet(s->fd, buf, pktlen);
-    if (rv != 0) {
-        return rv;
+    if (s->stream_id != -1) {
+        // A stream is open, so we will write to the stream
+        rv = prepare_packet(s->conn, s->stream_id, buf, sizeof(buf), &pktlen, &iov);
+
+        if (rv != 0) {
+            return rv;
+        }
+
+        rv = send_packet(s->fd, buf, pktlen);
+        if (rv != 0) {
+            return rv;
+        }
     }
 
     return 0;
@@ -381,7 +422,9 @@ int main(int argc, char **argv) {
 
     int rv;
 
-    uint8_t message[] = "Hello client!";
+    // TODO - Macro the message size
+    uint8_t message[160];
+    s.reply_data = message;
 
     // Allocates the fd to listen for connections, and sets up the wolfSSL backend
     rv = server_init(&s);
@@ -395,7 +438,7 @@ int main(int argc, char **argv) {
             return rv;
         }
 
-        rv = server_write_step(&s, message, sizeof(message));
+        rv = server_write_step(&s, s.reply_data, s.reply_data_len);
         if (rv != 0) {
             return rv;
         }
