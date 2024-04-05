@@ -66,7 +66,6 @@ static int client_wolfssl_init(client *c) {
     return 0;
 }
 
-// Function code taken mostly from spaceQUIC
 static int client_resolve_and_connect(client *c, const char *target_host, const char *target_port) {
     struct addrinfo hints;
     struct addrinfo *result, *rp;
@@ -79,51 +78,14 @@ static int client_resolve_and_connect(client *c, const char *target_host, const 
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_DGRAM;
 
-    rv = getaddrinfo(target_host, target_port, &hints, &result);
+    // Resolves target host and port, opens connection to it,
+    // and updates variables fd, and local and remote sockaddr and socklen in client
+    rv = resolve_and_process(&c->fd, target_host, target_port, &hints, 0, &c->localsock, &c->locallen, &c->remotesock, &c->remotelen);
+
     if (rv != 0) {
-        fprintf(stderr, "Failed to get address info for requested endpoint\n");
-        return ERROR_HOST_LOOKUP;
+        return rv;
     }
 
-    // Result is the head of a linked list, with nodes of type addrinfo
-    for (rp = result; rp != NULL; rp = rp->ai_next) {
-        // Attempt to open a file descriptor for current address info in results
-        fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-        if (fd == -1)
-            // If can't open a socket for it, move on
-            continue;
-
-        // Attempt to connect the created file descriptor to the address we've looked up
-        if (connect(fd, rp->ai_addr, rp->ai_addrlen) == 0) {
-            // Assign the path's remote addrlen. Must copy the value into the remote.addr pointer since rp will be deallocated
-            c->remotelen = rp->ai_addrlen;
-            memcpy(&c->remotesock, rp->ai_addr, rp->ai_addrlen);
-
-            // Set the local path of the client
-            socklen_t len = sizeof(c->localsock);
-            if (getsockname(fd, &c->localsock, &len) == -1)
-                return ERROR_GET_SOCKNAME;
-            c->locallen = len;
-
-            // Exit the loop when the first successful connection is made
-            break;
-        }
-
-        // If the connection was not made, close the fd and keep looking
-        close(fd);
-    }
-
-    // Must manually deallocate the results from the lookup
-    freeaddrinfo(result);
-
-    // If the loop finished by getting to the end, rather than with a successful connection, return -1
-    if (rp == NULL) {
-        fprintf(stderr, "Could not connect to any returned addresses\n");
-        return ERROR_COULD_NOT_OPEN_CONNECTION_FD;
-    }
-
-    // Save the fd of the open socket connected to the endpoint
-    c->fd = fd;
     return 0;
 }
 
@@ -267,49 +229,7 @@ static int client_init(client *c, char* server_ip) {
 }
 
 static int client_write_step(client *c, uint8_t *data, size_t datalen) {
-    size_t pktlen;
-    
-    struct iovec iov;
-
-    int rv;
-
-    uint8_t buf[BUF_SIZE];
-
-    iov.iov_base = data;
-    iov.iov_len = datalen;
-
-    for (;;) {
-        rv = prepare_nonstream_packet(c->conn, buf, sizeof(buf), &pktlen);
-        if (rv == ERROR_NO_NEW_MESSAGE) {
-            break;
-        }
-
-        if (rv != 0) {
-            return rv;
-        }
-
-        rv = send_packet(c->fd, buf, pktlen);
-
-        if (rv != 0) {
-            return rv;
-        }
-    }
-
-    if (c->stream_id != -1) {
-        rv = prepare_packet(c->conn, c->stream_id, buf, sizeof(buf), &pktlen, &iov);
-
-        if (rv != 0) {
-            return rv;
-        }
-
-        rv = send_packet(c->fd, buf, pktlen);
-
-        if (rv != 0) {
-            return rv;
-        }
-    }
-
-    return 0;
+    return write_step(c->conn, c->fd, c->stream_id, data, datalen);
 }
 
 static int client_read_step(client *c) {

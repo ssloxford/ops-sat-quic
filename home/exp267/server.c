@@ -144,11 +144,9 @@ static int server_settings_init(ngtcp2_callbacks *callbacks, ngtcp2_settings *se
     return 0;
 }
 
-// Function code taken mostly from spaceQUIC
 static int server_resolve_and_bind(server *s, const char *server_port) {
     struct addrinfo hints;
-    struct addrinfo *result, *rp;
-    int ret, fd;
+    int rv;
 
     // Documentation requires hints to be cleared
     memset(&hints, 0, sizeof(hints));
@@ -157,35 +155,14 @@ static int server_resolve_and_bind(server *s, const char *server_port) {
     hints.ai_socktype = SOCK_DGRAM;
     hints.ai_flags = AI_PASSIVE;
 
-    // INADDR_ANY opens the port to all IPv4 sources
-    ret = getaddrinfo(INADDR_ANY, server_port, &hints, &result);
-    if (ret != 0)
-        return ERROR_HOST_LOOKUP;
+    // Resolves the local port, opens an fd and binds it to the address,
+    // and updates the local sockaddr and socklen in server
+    rv = resolve_and_process(&s->fd, INADDR_ANY, server_port, &hints, 1, &s->localsock, &s->locallen, NULL, NULL);
 
-    // For each potential localaddr, attempt to open a fd and bind the address
-    for (rp = result; rp != NULL; rp = rp->ai_next) {
-        fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-        if (fd == -1)
-            continue;
-
-        if (bind(fd, rp->ai_addr, rp->ai_addrlen) == 0) {
-            s->locallen = rp->ai_addrlen;
-            memcpy(&s->localsock, rp->ai_addr, rp->ai_addrlen);
-            break;
-        }
-
-        // If the bind failed, close the fd
-        close(fd);
+    if (rv != 0) {
+        return rv;
     }
 
-    // Manually deallocate the generated addresses
-    freeaddrinfo(result);
-
-    if (rp == NULL)
-    // TODO - Need a new error code
-        return -1;
-
-    s->fd = fd;
     return 0;
 }
 
@@ -363,52 +340,7 @@ static int server_read_step(server *s) {
 }
 
 static int server_write_step(server *s, uint8_t *data, size_t datalen) {
-    // Data and datalen is the data to be written
-    // Buf and bufsize is a general use memory allocation (eg. to pass packets to subroutines)
-    size_t pktlen;
-    struct iovec iov;
-
-    uint8_t buf[BUF_SIZE];
-
-    int rv;
-
-    iov.iov_base = data;
-    iov.iov_len = datalen;
-
-    // Send any non-stream packets (eg. handshake)
-    for (;;) {
-        rv = prepare_nonstream_packet(s->conn, buf, sizeof(buf), &pktlen);
-        if (rv == ERROR_NO_NEW_MESSAGE) {
-            break;
-        }
-
-        if (rv != 0) {
-            return rv;
-        }
-
-        rv = send_packet(s->fd, buf, pktlen);
-
-        if (rv != 0) {
-            return rv;
-        }
-
-    }
-
-    if (s->stream_id != -1) {
-        // A stream is open, so we will write to the stream
-        rv = prepare_packet(s->conn, s->stream_id, buf, sizeof(buf), &pktlen, &iov);
-
-        if (rv != 0) {
-            return rv;
-        }
-
-        rv = send_packet(s->fd, buf, pktlen);
-        if (rv != 0) {
-            return rv;
-        }
-    }
-
-    return 0;
+    return write_step(s->conn, s->fd, s->stream_id, data, datalen);
 }
 
 static int server_deinit(server *s) {
