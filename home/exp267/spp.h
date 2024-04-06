@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <stddef.h>
 
 #define SPP_PRIM_HEADER_LEN 6
 #define SPP_SEC_HEADER_LEN 2
@@ -86,3 +87,13 @@ typedef struct _SPP {
 
     uint8_t* user_data;
 } SPP;
+
+int construct_spp(SPP *spp, const uint8_t *payload, size_t payloadlen, uint8_t *data_field, pkt_type packet_type, seq_flag seq_flags, uint16_t spp_pkt_num, uint8_t udp_pkt_num, uint8_t udp_frag_count, uint8_t udp_frag_num);
+
+int serialise_spp(uint8_t *buf, size_t buflen, const SPP *spp);
+
+int deserialise_spp(const uint8_t *buf, SPP *spp);
+
+int fragment_data(SPP **spp, const uint8_t *data, size_t datalen, int *packets_made, uint16_t spp_pkt_count, uint8_t udp_pkt_num);
+
+int free_spp_array(SPP *array, size_t arraylen);
