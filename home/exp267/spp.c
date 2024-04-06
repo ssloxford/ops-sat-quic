@@ -6,6 +6,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+// TODO - Make all the error codes negative and macros
+
+// TODO - Check that packet data length fields accurately EXCLUDE the primary header
+
 // TODO - Warning when truncating significant bits?
 int construct_spp(SPP *spp, const uint8_t *payload, size_t payloadlen, uint8_t *data_field, pkt_type packet_type, seq_flag seq_flags, uint16_t spp_pkt_num, uint8_t udp_pkt_num, uint8_t udp_frag_count, uint8_t udp_frag_num) {
     if (payloadlen > SPP_MAX_DATA_LEN) {
@@ -23,8 +27,8 @@ int construct_spp(SPP *spp, const uint8_t *payload, size_t payloadlen, uint8_t *
     spp->primary_header.pkt_seq_ctrl.sequence_flags = 0x03 & seq_flags;
     spp->primary_header.pkt_seq_ctrl.sequence_count = 0x3fff & spp_pkt_num;
 
-    // data length field is one less than the total number of bytes
-    spp->primary_header.packet_data_length = payloadlen + SPP_HEADER_LEN - 1;
+    // data length field is one less than the number of data (non-primary header) bytes
+    spp->primary_header.packet_data_length = payloadlen + SPP_SEC_HEADER_LEN - 1;
 
     // Secondary header
     spp->secondary_header.udp_packet_num = udp_pkt_num;
@@ -39,14 +43,14 @@ int construct_spp(SPP *spp, const uint8_t *payload, size_t payloadlen, uint8_t *
 }
 
 int serialise_spp(uint8_t *buf, size_t buflen, const SPP *spp) {
-    if (buflen < spp->primary_header.packet_data_length + 1) {
+    size_t packet_length = SPP_TOTAL_LENGTH(spp->primary_header.packet_data_length);
+
+    if (buflen < packet_length) {
         // Buffer is too small to hold the packet
         return -1;
     }
 
-    memset(buf, 0, buflen);
-
-    size_t data_field_len = spp->primary_header.packet_data_length + 1 - SPP_HEADER_LEN;
+    memset(buf, 0, packet_length);
 
     buf[0] |= 0xe0 & (spp->primary_header.packet_version_number << 5);
 
@@ -70,6 +74,7 @@ int serialise_spp(uint8_t *buf, size_t buflen, const SPP *spp) {
     buf[7] |= 0xf0 & (spp->secondary_header.udp_frag_count << 4);
     buf[7] |= 0x0f & (spp->secondary_header.udp_frag_num);
 
+    size_t data_field_len = packet_length - SPP_HEADER_LEN;
     memcpy(buf+SPP_HEADER_LEN, spp->user_data, data_field_len);
 
     return 0;
@@ -94,9 +99,9 @@ int deserialise_spp(const uint8_t *buf, SPP *spp) {
 
     // It is assumed that the buffer in spp->user_data is big enough to take the data
     // It's also assumed that the buffer provided is long enough to hold all the promised data
-    memcpy(spp->user_data, buf + SPP_HEADER_LEN, spp->primary_header.packet_data_length + 1 - SPP_HEADER_LEN);
+    memcpy(spp->user_data, buf + SPP_HEADER_LEN, SPP_PAYLOAD_LENGTH(spp->primary_header.packet_data_length));
 
-    return 0;
+    return SPP_TOTAL_LENGTH(spp->primary_header.packet_data_length);
 }
 
 int fragment_data(SPP **spp, const uint8_t *data, size_t datalen, int *packets_made, uint16_t spp_pkt_count, uint8_t udp_pkt_num) {

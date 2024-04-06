@@ -114,61 +114,6 @@ int read_message(int fd, uint8_t *buf, size_t buflen, struct sockaddr *remote_ad
 }
 
 
-// Function code taken mostly from spaceQUIC
-int resolve_and_process(int *save_fd, const char *target_host, const char* target_port, struct addrinfo *hints, int is_server, ngtcp2_sockaddr *localsock, ngtcp2_socklen *localsocklen, ngtcp2_sockaddr *remotesock, ngtcp2_socklen *remotesocklen) {
-    struct addrinfo *result, *rp;
-    int rv, fd;
-
-    rv = getaddrinfo(target_host, target_port, hints, &result);
-    if (rv != 0) {
-        fprintf(stderr, "Failed to get address info for requested endpoint: %s\n", gai_strerror(rv));
-        return ERROR_HOST_LOOKUP;
-    }
-
-    // Result is the head of a linked list, with nodes of type addrinfo
-    for (rp = result; rp != NULL; rp = rp->ai_next) {
-        // Attempt to open a file descriptor for current address info in results
-        fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-        if (fd == -1)
-            // If can't open a socket for it, move on
-            continue;
-
-        // Attempt to connect the created file descriptor to the address we've looked up
-        if (!is_server && connect(fd, rp->ai_addr, rp->ai_addrlen) == 0) {
-            // Assign the path's remote addrlen. Must copy the value into the remote.addr pointer since rp will be deallocated
-            *remotesocklen = rp->ai_addrlen;
-            memcpy(remotesock, rp->ai_addr, rp->ai_addrlen);
-
-            // Set the local path of the client
-            if (getsockname(fd, localsock, localsocklen) == -1)
-                return ERROR_GET_SOCKNAME;
-
-            // Exit the loop when the first successful connection is made
-            break;
-        } else if (is_server && bind(fd, rp->ai_addr, rp->ai_addrlen) == 0) {
-            *localsocklen = rp->ai_addrlen;
-            memcpy(localsock, rp->ai_addr, rp->ai_addrlen);
-            break;
-        }
-
-        // If the connection was not made, close the fd and keep looking
-        close(fd);
-    }
-
-    // Must manually deallocate the results from the lookup
-    freeaddrinfo(result);
-
-    // If the loop finished by getting to the end, rather than with a successful connection, return -1
-    if (rp == NULL) {
-        fprintf(stderr, "Could not proccess any resolved addresses\n");
-        return ERROR_COULD_NOT_OPEN_CONNECTION_FD;
-    }
-
-    // Save the fd of the open socket connected to the endpoint
-    *save_fd = fd;
-    return 0;
-}
-
 int write_step(ngtcp2_conn *conn, int fd, uint64_t stream_id, uint8_t *data, size_t datalen) {
     // Data and datalen is the data to be written
     // Buf and bufsize is a general use memory allocation (eg. to pass packets to subroutines)

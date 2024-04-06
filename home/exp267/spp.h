@@ -3,11 +3,19 @@
 
 #define SPP_PRIM_HEADER_LEN 6
 #define SPP_SEC_HEADER_LEN 2
+
+// Specific to ESA project
 #define SPP_MTU 256
 #define SPP_APID 1024 + 267
 
 #define SPP_HEADER_LEN (SPP_PRIM_HEADER_LEN + SPP_SEC_HEADER_LEN)
 #define SPP_MAX_DATA_LEN (SPP_MTU - SPP_HEADER_LEN)
+
+// TODO - Apply these macros
+
+#define SPP_TOTAL_LENGTH(pkt_data_len_field) (pkt_data_len_field + 1 + SPP_PRIM_HEADER_LEN)
+#define SPP_DATA_LENGTH(pkt_total_len) (pkt_total_len - SPP_PRIM_HEADER_LEN - 1)
+#define SPP_PAYLOAD_LENGTH(pkt_data_len_field) (pkt_data_len_field - SPP_SEC_HEADER_LEN + 1)
 
 // All fields have the first transmitted (left most) bit as most significant
 // Field lengths are specified in comments
