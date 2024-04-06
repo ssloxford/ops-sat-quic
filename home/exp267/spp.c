@@ -4,13 +4,10 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 
-int fragment_data(SPP **spp, const uint8_t *data, size_t datalen) {
-    return 0;
-}
-
-// TODO - Checks that non byte aligned fields are safely truncated?
-int construct_spp(SPP *spp, const uint8_t *payload, size_t payloadlen, uint8_t *data_field, uint8_t packet_type, seq_flag seq_flags, uint16_t spp_pkt_num, uint8_t udp_pkt_num, uint8_t udp_frag_count, uint8_t udp_frag_num) {
+// TODO - Warning when truncating significant bits?
+int construct_spp(SPP *spp, const uint8_t *payload, size_t payloadlen, uint8_t *data_field, pkt_type packet_type, seq_flag seq_flags, uint16_t spp_pkt_num, uint8_t udp_pkt_num, uint8_t udp_frag_count, uint8_t udp_frag_num) {
     if (payloadlen > SPP_MAX_DATA_LEN) {
         fprintf(stderr, "Data of %ld bytes does not fit into payload field\n", payloadlen);
         return 1;
@@ -19,24 +16,93 @@ int construct_spp(SPP *spp, const uint8_t *payload, size_t payloadlen, uint8_t *
     // Primary header
     spp->primary_header.packet_version_number = 0;
 
-    spp->primary_header.pkt_id.packet_type = packet_type;
+    spp->primary_header.pkt_id.packet_type = 0x01 & packet_type;
     spp->primary_header.pkt_id.secondary_header_present = 1;
-    spp->primary_header.pkt_id.apid = SPP_APID;
+    spp->primary_header.pkt_id.apid = 0x07ff & SPP_APID;
 
-    spp->primary_header.pkt_seq_ctrl.sequence_flags = seq_flags;
-    spp->primary_header.pkt_seq_ctrl.sequence_count = spp_pkt_num;
+    spp->primary_header.pkt_seq_ctrl.sequence_flags = 0x03 & seq_flags;
+    spp->primary_header.pkt_seq_ctrl.sequence_count = 0x3fff & spp_pkt_num;
 
     // data length field is one less than the total number of bytes
     spp->primary_header.packet_data_length = payloadlen + SPP_HEADER_LEN - 1;
 
     // Secondary header
     spp->secondary_header.udp_packet_num = udp_pkt_num;
-    spp->secondary_header.udp_frag_count = udp_frag_count;
-    spp->secondary_header.udp_frag_num = udp_frag_num;
+    spp->secondary_header.udp_frag_count = 0x0f & udp_frag_count;
+    spp->secondary_header.udp_frag_num = 0x0f & udp_frag_num;
 
     // Payload
     memcpy(data_field, payload, payloadlen);
     spp->user_data = data_field;
+
+    return 0;
+}
+
+int fragment_data(SPP **spp, const uint8_t *data, size_t datalen, int *packets_made, uint16_t spp_pkt_count, uint8_t udp_pkt_num) {
+    int data_written, data_this_packet;
+    seq_flag seq_flag;
+
+    uint8_t *user_data;
+
+    int rv;
+
+    // The division will truncate so need to make sure we "round up"
+    int packets_needed = (datalen + SPP_MAX_DATA_LEN - 1) / SPP_MAX_DATA_LEN;
+
+    *packets_made = 0;
+
+    *spp = malloc(packets_needed * sizeof(SPP));
+
+    if (*spp == NULL) {
+        return -1;
+    }
+
+    for (int i = 0; i < packets_needed; i++) {
+        data_written = i * SPP_MAX_DATA_LEN;
+
+        // Ammount of data left to write
+        data_this_packet = datalen - data_written;
+
+        if (data_this_packet > SPP_MAX_DATA_LEN) {
+            data_this_packet = SPP_MAX_DATA_LEN;
+        }
+        
+        user_data = malloc(data_this_packet);
+
+        if (user_data = NULL) {
+            return -1;
+        }
+
+        // Set the segment sequence flag
+        if (packets_needed == 1) {
+            seq_flag = unseg;
+        } else if (i == 0) {
+            seq_flag = first;
+        } else if (i == packets_needed - 1) {
+            seq_flag = last;
+        } else {
+            seq_flag = cont;
+        }
+
+        // *spp + i is the address of the ith element in the array at *spp
+        rv = construct_spp(*spp + i, data + data_written, data_this_packet, user_data, telecommand, seq_flag, spp_pkt_count + i, udp_pkt_num, packets_needed, i);
+
+        if (rv != 0) {
+            return rv;
+        }
+
+        *packets_made++;
+    }
+
+    return 0;
+}
+
+int free_spp_array(SPP *array, size_t arraylen) {
+    for (int i = 0; i < arraylen; i++) {
+        free(array[i].user_data);
+    }
+    
+    free(array);
 
     return 0;
 }
@@ -92,25 +158,6 @@ int deserialise_spp(const uint8_t *buf, SPP *spp) {
     // It is assumed that the buffer in spp->user_data is big enough to take the data
     // It's also assumed that the buffer provided is long enough to hold all the promised data
     memcpy(spp->user_data, buf + SPP_HEADER_LEN, spp->primary_header.packet_data_length + 1 - SPP_HEADER_LEN);
-
-    return 0;
-}
-
-static int main(int argc, char **argv) {
-    SPP spp, de_spp;
-    uint8_t data[SPP_MAX_DATA_LEN], de_data[SPP_MAX_DATA_LEN];
-    uint8_t message[] = "Hello world!";
-
-    de_spp.user_data = de_data;
-
-    uint8_t buf[SPP_MTU];
-
-    construct_spp(&spp, message, sizeof(message), data, 0, first, 0, 0, 1, 1);
-
-    serialise_spp(buf, sizeof(buf), sizeof(data), &spp);
-    deserialise_spp(buf, &de_spp);
-
-    printf("%s\n", de_spp.user_data);
 
     return 0;
 }

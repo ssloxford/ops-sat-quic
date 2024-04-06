@@ -18,11 +18,15 @@ typedef enum _seq_flag {
     unseg = 3,
 } seq_flag;
 
+typedef enum _pkt_type {
+    telecommand = 0,
+    telemetry = 1,
+} pkt_type;
+
 // 13 bits
 typedef struct _SPP_primary_packet_id {
     // 1 bit
-    // 0 for telemetry and 1 for telecommand
-    uint8_t packet_type;
+    pkt_type packet_type;
 
     // 1 bit
     // 1 if the secondary header is present. 0 if the secondary header is not
