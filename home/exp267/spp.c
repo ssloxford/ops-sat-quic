@@ -133,9 +133,11 @@ int fragment_data(SPP **spp, const uint8_t *data, size_t datalen, int *packets_m
             data_this_packet = SPP_MAX_DATA_LEN;
         }
         
-        user_data = malloc(data_this_packet);
+        // TODO - We can decrease this to data_this_packet
+        // Create the buffer that we'll point to in the SPP struct
+        user_data = malloc(SPP_MAX_DATA_LEN);
 
-        if (user_data = NULL) {
+        if (user_data == NULL) {
             return -1;
         }
 
@@ -150,6 +152,7 @@ int fragment_data(SPP **spp, const uint8_t *data, size_t datalen, int *packets_m
             seq_flag = cont;
         }
 
+        // TODO - seg fault in this call when making the copy from data (payload to be sent) to user_data (payload field of the SPP object)
         // *spp + i is the address of the ith element in the array at *spp
         rv = construct_spp(*spp + i, data + data_written, data_this_packet, user_data, telecommand, seq_flag, spp_pkt_count + i, udp_pkt_num, packets_needed, i);
 
@@ -157,7 +160,7 @@ int fragment_data(SPP **spp, const uint8_t *data, size_t datalen, int *packets_m
             return rv;
         }
 
-        *packets_made++;
+        *packets_made = *packets_made + 1;
     }
 
     return 0;

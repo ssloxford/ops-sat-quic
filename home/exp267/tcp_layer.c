@@ -10,7 +10,6 @@
 #include <netdb.h>
 
 #define TCP_PORT "11112"
-#define UDP_PORT SERVER_PORT // TODO - This macro is in connection.h - Move it to utils?
 #define MAX_UDP_PACKET_SIZE 1200 // TODO - define this in terms of the other macros
 
 // TODO - Timeout on these?
@@ -30,6 +29,23 @@ typedef struct _incomplete_packet {
     struct _incomplete_packet *next, *last;
 } incomplete_packet;
 
+// Function for debug only
+static int connect_tcp_socket(int *fd, char *server_port, struct sockaddr *remoteaddr, socklen_t *remoteaddrlen) {
+    struct addrinfo hints;
+
+    struct sockaddr_storage addrstorage;
+    socklen_t socklen;
+
+    memset(&hints, 0, sizeof(hints));
+
+    hints.ai_family = AF_INET;
+    hints.ai_protocol = IPPROTO_TCP;
+
+    // Opens TCP socket and connects to localhost:target_port, saving the sockaddr to remoteaddr
+    return resolve_and_process(fd, "localhost", server_port, &hints, 0, (struct sockaddr*) &addrstorage, &socklen, remoteaddr, remoteaddrlen);
+}
+
+// TODO - Replace bind with listen and accept
 static int bind_tcp_socket(int *fd, char *server_port) {
     struct addrinfo hints;
 
@@ -40,26 +56,26 @@ static int bind_tcp_socket(int *fd, char *server_port) {
     memset(&hints, 0, sizeof(hints));
 
     hints.ai_family = AF_INET; // IPv4 addresses
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_protocol = IPPROTO_TCP; // TCP sockets only
+    hints.ai_protocol = IPPROTO_TCP; // TCP socket
+    hints.ai_flags = AI_PASSIVE;
 
     return resolve_and_process(fd, INADDR_ANY, server_port, &hints, 1, (struct sockaddr*) &addrstorage, &socklen, NULL, NULL);
 }
 
-static int connect_udp_socket(int *fd, char *target_port, struct sockaddr *remoteaddr, socklen_t *remoteaddrlen) {
+static int bind_udp_socket(int *fd, char *server_port) {
     struct addrinfo hints;
 
+    // Dummy variables so that we can use the resolve and process function without segfault
     struct sockaddr_storage addrstorage;
     socklen_t socklen;
 
     memset(&hints, 0, sizeof(hints));
 
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_DGRAM;
-    hints.ai_protocol = IPPROTO_UDP;
+    hints.ai_family = AF_INET; // IPv4 addresses
+    hints.ai_protocol = IPPROTO_UDP; // UDP sockets only
+    hints.ai_flags = AI_PASSIVE;
 
-    // Opens UDP socket and connects to localhost:target_port, saving the sockaddr to remoteaddr
-    return resolve_and_process(fd, "localhost", target_port, &hints, 0, (struct sockaddr*) &addrstorage, &socklen, remoteaddr, remoteaddrlen);
+    return resolve_and_process(fd, INADDR_ANY, server_port, &hints, 1, (struct sockaddr*) &addrstorage, &socklen, NULL, NULL);
 }
 
 static void add_to_node(SPP *spp, incomplete_packet *node) {
@@ -182,6 +198,8 @@ static int handle_tcp_packet(int tcp_fd, int udp_fd, uint8_t *buf, size_t buflen
         // found_pkt is a pointer to the node containing the relevant packet. Handle if the packet is now complete
         if (found_pkt->frag_count == found_pkt->frags_recieved) {
             // Packet is complete. Ready to be transmitted over UDP
+
+            // TODO - How does it know where to send the packet?
             send(udp_fd, found_pkt->partial_payload, found_pkt->packet_length, 0);
 
             // Reconnect the linked list
@@ -270,41 +288,61 @@ int main(int argc, char **argv) {
 
     struct pollfd polls[2];
 
-    // TODO - Replace argv[1] with default macro
-    rv = connect_udp_socket(&udp_fd, argv[1], &udp_remote, &udp_remotelen);
+    char *udp_target_port;
+
+    if (argc <= 1) {
+        // No UDP port to listen on provided
+        return -1;
+    }
+
+    udp_target_port = argv[1];
+
+    // TODO - Do we need to provide the UDPs ports to send to?
+    // Listen on provided socket
+    rv = bind_udp_socket(&udp_fd, udp_target_port);
 
     if (rv != 0) {
         return rv;
     }
-
     
-    // Opens a socket to listen for TCP connections on and binds it to TCP port
-    // Must then listen on that port and accept 
-    rv = bind_tcp_socket(&tcp_listen_fd, TCP_PORT);
+    // TODO - If section only for debug. Initiates connection to other TCP host. Activated by providing a useless second argument
+    if (argc > 2) {
+        // Have it initiate tcp connection
+        rv = connect_tcp_socket(&tcp_conn_fd, TCP_PORT, &tcp_remote, &tcp_remotelen);
 
-    if (rv != 0) {
-        return rv;
+        if (rv != 0) {
+            return rv;
+        }
+    } else {
+        // Opens a socket to listen for TCP connections on and binds it to TCP port
+        // Must then listen on that port and accept 
+        rv = bind_tcp_socket(&tcp_listen_fd, TCP_PORT);
+
+        if (rv != 0) {
+            return rv;
+        }
+
+        // Marks the TCP socket as accepting connections. Connection queue of length 1
+        rv = listen(tcp_listen_fd, 1);
+
+        if (rv != 0) {
+            fprintf(stderr, "listen: %s\n", strerror(errno));
+            return rv;
+        }
+
+        // Blocking call if none pending in the connection queue. Returns a new fd on success
+        rv = accept(tcp_listen_fd, &tcp_remote, &tcp_remotelen);
+
+        if (rv == -1) {
+            fprintf(stderr, "accept: %s\n", strerror(errno));
+            return rv;
+        }
+
+        // Accept call was successful. Record the fd of the opened connection
+        tcp_conn_fd = rv;
     }
-
-    // Marks the TCP socket as accepting connections. Connection queue of length 1
-    rv = listen(tcp_listen_fd, 1);
-
-    if (rv != 0) {
-        fprintf(stderr, "listen: %s\n", strerror(errno));
-        return rv;
-    }
-
-    // Blocking call if none pending in the connection queue. Returns a new fd on success
-    rv = accept(tcp_listen_fd, &tcp_remote, &tcp_remotelen);
-
-    if (rv == -1) {
-        fprintf(stderr, "accept: %s\n", strerror(errno));
-        return rv;
-    }
-
-    // Accept call was successful. Record the fd of the opened connection
-    tcp_conn_fd = rv;
     
+    printf("Successfully got to the poll bit\n");
 
     polls[0].fd = tcp_conn_fd;
     polls[1].fd = udp_fd;
@@ -315,10 +353,12 @@ int main(int argc, char **argv) {
         // Wait for either connection to have data
         poll(polls, 2, -1);
 
-        if (polls[0].revents | POLLIN) {
+        if (polls[0].revents & POLLIN) {
+            printf("TCP message recieved\n");
             // TCP packet recieved
             handle_tcp_packet(tcp_conn_fd, udp_fd, buf, sizeof(buf), &incomp_pkts);
-        } else if (polls[1].revents | POLLIN) {
+        } else if (polls[1].revents & POLLIN) {
+            printf("UDP message recieved\n");
             // UDP packet recieved
             handle_udp_packet(udp_fd, tcp_conn_fd, buf, sizeof(buf), spp_count, udp_count, &packets_sent);
             udp_count++;

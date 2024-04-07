@@ -151,9 +151,9 @@ static int server_resolve_and_bind(server *s, const char *server_port) {
     // Documentation requires hints to be cleared
     memset(&hints, 0, sizeof(hints));
     
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_DGRAM;
-    hints.ai_flags = AI_PASSIVE;
+    hints.ai_family = AF_INET;
+    hints.ai_protocol = IPPROTO_UDP;
+    hints.ai_flags = AI_PASSIVE; // Ensures the resulting sockaddr supports binding
 
     // Resolves the local port, opens an fd and binds it to the address,
     // and updates the local sockaddr and socklen in server

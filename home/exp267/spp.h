@@ -11,8 +11,6 @@
 #define SPP_HEADER_LEN (SPP_PRIM_HEADER_LEN + SPP_SEC_HEADER_LEN)
 #define SPP_MAX_DATA_LEN (SPP_MTU - SPP_HEADER_LEN)
 
-// TODO - Apply these macros
-
 #define SPP_TOTAL_LENGTH(pkt_data_len_field) (pkt_data_len_field + 1 + SPP_PRIM_HEADER_LEN)
 #define SPP_DATA_LENGTH(pkt_total_len) (pkt_total_len - SPP_PRIM_HEADER_LEN - 1)
 #define SPP_PAYLOAD_LENGTH(pkt_data_len_field) (pkt_data_len_field - SPP_SEC_HEADER_LEN + 1)

@@ -76,7 +76,7 @@ static int client_resolve_and_connect(client *c, const char *target_host, const 
 
     // Look for available IPv4 UDP endpoints
     hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_protocol = IPPROTO_UDP;
 
     // Resolves target host and port, opens connection to it,
     // and updates variables fd, and local and remote sockaddr and socklen in client
