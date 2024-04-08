@@ -157,6 +157,10 @@ int write_step(ngtcp2_conn *conn, int fd, uint64_t stream_id, uint8_t *data, siz
 
         rv = send_packet(fd, buf, pktlen);
         
+            
+        // Wait until ts (now) before sending the next packet
+        // ngtcp2_conn_update_pkt_tx_time(conn, timestamp());
+
         if (rv != 0) {
             return rv;
         }

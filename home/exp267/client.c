@@ -300,7 +300,39 @@ static int client_read_step(client *c) {
 }
 
 static int client_deinit(client *c) {
-    // TODO - Implement
+    uint8_t buf[BUF_SIZE];
+    ngtcp2_path_storage ps;
+    ngtcp2_ccerr ccerr;
+
+    int rv;
+
+    ngtcp2_ssize pktlen;
+
+    ccerr.type = NGTCP2_CCERR_TYPE_APPLICATION;
+
+    ngtcp2_path_storage_zero(&ps);
+
+    ngtcp2_tstamp ts = timestamp();
+
+    pktlen = ngtcp2_conn_write_connection_close(c->conn, &ps.path, NULL, buf, sizeof(buf), &ccerr, ts);
+
+    if (pktlen < 0) {
+        fprintf(stderr, "Error when closing connection: %s\n", ngtcp2_strerror(pktlen));
+        return pktlen;
+    }
+
+    rv = send_packet(c->fd, buf, pktlen);
+
+    if (rv != 0) {
+        return rv;
+    }
+
+    ngtcp2_conn_del(c->conn);
+
+    wolfSSL_free(c->ssl);
+    wolfSSL_CTX_free(c->ctx);
+
+    close(c->fd);
 
     return 0;
 }
@@ -333,10 +365,12 @@ int main(int argc, char **argv){
             fprintf(stdout, "Send: ");
             fflush(stdout);
             rv = read(STDIN_FILENO, message, 160);
-            // Manually null terminate the read string
-            message[rv] = '\0';
-            // Update rv to match the new string length
-            rv++;
+            // Replace newline character with null terminate
+            message[rv-1] = '\0';
+        }
+
+        if (strcmp(message, "quit") == 0) {
+            return client_deinit(&c);
         }
 
         rv = client_write_step(&c, message, rv);

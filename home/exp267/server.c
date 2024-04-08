@@ -195,6 +195,15 @@ static int server_init(server *s) {
     return 0;
 }
 
+static int server_close_connection(server *s) {
+    s->connected = 0;
+    s->stream_id = -1;
+
+    ngtcp2_conn_del(s->conn);
+
+    return 0;
+}
+
 static int server_accept_connection(server *s, uint8_t *buf, size_t buflen, ngtcp2_path *path) {
     ngtcp2_pkt_hd header;
     ngtcp2_transport_params params;
@@ -331,8 +340,14 @@ static int server_read_step(server *s) {
         rv = ngtcp2_conn_read_pkt(s->conn, &path, NULL, buf, pktlen, timestamp());
 
         if (rv != 0) {
-            fprintf(stderr, "Failed to read packet: %s\n", ngtcp2_strerror(rv));
-            return rv;
+            if (rv == NGTCP2_ERR_DRAINING) {
+                // Client has closed it's connection
+                server_close_connection(s);
+                return ERROR_DRAINING_STATE;
+            } else {
+                fprintf(stderr, "Failed to read packet: %s\n", ngtcp2_strerror(rv));
+                return rv; 
+            }
         }
     }
 
@@ -367,6 +382,9 @@ int main(int argc, char **argv) {
     while (1) {
         rv = server_read_step(&s);
         if (rv != 0 && rv != ERROR_NO_NEW_MESSAGE) {
+            if (rv == ERROR_DRAINING_STATE) {
+                continue;
+            }
             return rv;
         }
 
