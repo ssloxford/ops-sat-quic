@@ -2,12 +2,14 @@
 #include "spp.h"
 
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <poll.h>
+#include <netdb.h>
 #include <stdint.h>
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
-#include <netdb.h>
+#include <unistd.h>
 
 #define TCP_PORT "11112"
 #define MAX_UDP_PACKET_SIZE 1200 // TODO - define this in terms of the other macros
@@ -127,7 +129,7 @@ static incomplete_packet* insert_new_node(SPP *spp, incomplete_packet *last, inc
     return node;
 }
 
-static int handle_tcp_packet(int tcp_fd, int udp_fd, uint8_t *buf, size_t buflen, incomplete_packet *incomp_pkts) {
+static int handle_tcp_packet(int udp_fd, uint8_t *buf, size_t buflen, size_t pktlen, incomplete_packet *incomp_pkts, const struct sockaddr *udp_addr, socklen_t addrlen) {
     int rv;
 
     size_t bytes_remaining, bytes_deserialised;
@@ -141,17 +143,8 @@ static int handle_tcp_packet(int tcp_fd, int udp_fd, uint8_t *buf, size_t buflen
 
     spp.user_data = spp_payload;
     
-    // Potentially blocking. Shouldn't be since I'm polling before the call
-    rv = recv(tcp_fd, buf, buflen, 0);
-
-    if (rv == -1) {
-        fprintf(stderr, "recv: %s\n", strerror(errno));
-    } else if (rv == 0) {
-        // Client has shut down connection
-    }
-
     // rv is the number of bytes read into buf
-    bytes_remaining = rv;
+    bytes_remaining = pktlen;
     bytes_deserialised = 0;
 
     // Loop allows multiple contiguous SPP packets in the TCP payload
@@ -200,7 +193,7 @@ static int handle_tcp_packet(int tcp_fd, int udp_fd, uint8_t *buf, size_t buflen
             // Packet is complete. Ready to be transmitted over UDP
 
             // TODO - How does it know where to send the packet?
-            send(udp_fd, found_pkt->partial_payload, found_pkt->packet_length, 0);
+            sendto(udp_fd, found_pkt->partial_payload, found_pkt->packet_length, 0, udp_addr, addrlen);
 
             // Reconnect the linked list
             found_pkt->last->next = found_pkt->next;
@@ -215,26 +208,14 @@ static int handle_tcp_packet(int tcp_fd, int udp_fd, uint8_t *buf, size_t buflen
     }
 }
 
-static int handle_udp_packet(int udp_fd, int tcp_fd, uint8_t *buf, size_t buflen, uint16_t spp_count, uint8_t udp_count, int *packets_sent) {
+static int handle_udp_packet(int tcp_fd, uint8_t *buf, size_t buflen, size_t pktlen, uint16_t spp_count, uint8_t udp_count, int *packets_sent) {
     int rv, packets_made;
-    ssize_t bytes_recieved, bytes_to_send;
+    size_t bytes_to_send;
 
     SPP *packets;
-    
-    // Blocking call if no message waiting
-    rv = recv(udp_fd, buf, buflen, 0);
-
-    if (rv == -1) {
-        fprintf(stderr, "recv: %s\n", strerror(errno));
-    } else if (rv == 0) {
-        // Client has shut down connection
-    }
-
-    // UDP packet successfully retrieved
-    bytes_recieved = rv;
 
     // Updates packets to the head of the array containing the fragmented data
-    rv = fragment_data(&packets, buf, bytes_recieved, &packets_made, spp_count, udp_count);
+    rv = fragment_data(&packets, buf, pktlen, &packets_made, spp_count, udp_count);
 
     if (rv != 0) {
         return rv;
@@ -263,12 +244,20 @@ static int handle_udp_packet(int udp_fd, int tcp_fd, uint8_t *buf, size_t buflen
     return 0;
 }
 
+void print_helpstring() {
+    printf("-h: Print help string\n");
+    printf("-c: Run TCP connection in client mode\n");
+    printf("-u: Set UDP listen port\n");
+}
+
 int main(int argc, char **argv) {
     int rv, packets_sent;
     int tcp_listen_fd, tcp_conn_fd, udp_fd;
 
     struct sockaddr udp_remote, tcp_remote;
     socklen_t udp_remotelen, tcp_remotelen;
+    
+    char opt;
 
     // DEBUG
     struct sockaddr_in servaddr;
@@ -289,13 +278,32 @@ int main(int argc, char **argv) {
     struct pollfd polls[2];
 
     char *udp_target_port;
+    int is_client, target_port_set = 0;
 
-    if (argc <= 1) {
-        // No UDP port to listen on provided
-        return -1;
+    // Process option flags
+    while ((opt = getopt(argc, argv, "hcu:")) != -1) {
+        switch (opt){
+            case 'h':
+                print_helpstring();
+                return 0;
+                break;
+            case 'c':
+                is_client = 1;
+                break;
+            case 'u':
+                udp_target_port = optarg;
+                target_port_set = 1;
+                break;
+            case '?':
+                printf("Unknown option -%c\n", optopt);
+                break;
+        }
     }
 
-    udp_target_port = argv[1];
+    if (!target_port_set) {
+        fprintf(stderr, "Must set UDP port to listen on. See help string\n");
+        return 0;
+    }
 
     // TODO - Do we need to provide the UDPs ports to send to?
     // Listen on provided socket
@@ -305,8 +313,7 @@ int main(int argc, char **argv) {
         return rv;
     }
     
-    // TODO - If section only for debug. Initiates connection to other TCP host. Activated by providing a useless second argument
-    if (argc > 2) {
+    if (is_client) {
         // Have it initiate tcp connection
         rv = connect_tcp_socket(&tcp_conn_fd, TCP_PORT, &tcp_remote, &tcp_remotelen);
 
@@ -342,7 +349,7 @@ int main(int argc, char **argv) {
         tcp_conn_fd = rv;
     }
     
-    printf("Successfully got to the poll bit\n");
+    // printf("Successfully got to the poll bit\n");
 
     polls[0].fd = tcp_conn_fd;
     polls[1].fd = udp_fd;
@@ -355,12 +362,19 @@ int main(int argc, char **argv) {
 
         if (polls[0].revents & POLLIN) {
             printf("TCP message recieved\n");
+
+            // Potentially blocking. Shouldn't be since I'm polling before the call
+            rv = recv(tcp_conn_fd, buf, sizeof(buf), 0);
+
             // TCP packet recieved
-            handle_tcp_packet(tcp_conn_fd, udp_fd, buf, sizeof(buf), &incomp_pkts);
+            handle_tcp_packet(udp_fd, buf, sizeof(buf), rv, &incomp_pkts, &udp_remote, udp_remotelen);
         } else if (polls[1].revents & POLLIN) {
             printf("UDP message recieved\n");
+
+            rv = recvfrom(udp_fd, buf, sizeof(buf), 0, &udp_remote, &udp_remotelen);
+
             // UDP packet recieved
-            handle_udp_packet(udp_fd, tcp_conn_fd, buf, sizeof(buf), spp_count, udp_count, &packets_sent);
+            handle_udp_packet(tcp_conn_fd, buf, sizeof(buf), rv, spp_count, udp_count, &packets_sent);
             udp_count++;
             spp_count += packets_sent;
         }

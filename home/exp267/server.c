@@ -3,10 +3,12 @@
 #include <ngtcp2/ngtcp2_crypto_wolfssl.h>
 
 #include <wolfssl/ssl.h>
+#include <wolfssl/options.h>
 
 #include <poll.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <netdb.h>
 
 #include "utils.h"
 #include "errors.h"
@@ -181,6 +183,8 @@ static int server_init(server *s) {
     // Server is not connected. No open stream
     s->connected = 0;
     s->stream_id = -1;
+
+    rand_init();
 
     rv = server_wolfssl_init(s);
     if (rv != 0) {

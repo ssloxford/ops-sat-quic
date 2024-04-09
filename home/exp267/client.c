@@ -3,6 +3,7 @@
 #include <ngtcp2/ngtcp2_crypto_wolfssl.h>
 
 #include <wolfssl/ssl.h>
+#include <wolfssl/options.h>
 
 #include <poll.h>
 
@@ -212,6 +213,8 @@ static int client_init(client *c, char* server_ip) {
 
     // TODO - Consider moving this to one of the other init funcs
     c->stream_id = -1;
+
+    rand_init();
 
     // Create the wolfSSL context and ssl instance and load it into the client struct
     rv = client_wolfssl_init(c);
