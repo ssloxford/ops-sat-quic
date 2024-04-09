@@ -41,6 +41,10 @@ int prepare_packet(ngtcp2_conn *conn, uint64_t stream_id, uint8_t* buf, size_t b
         // Update pktlen with the length of the produced packet
         *pktlen = rv;
     }
+
+    
+    // Wait until ts (now) before sending the next packet
+    // ngtcp2_conn_update_pkt_tx_time(conn, ts);
     
     return 0;
 }
@@ -113,7 +117,6 @@ int read_message(int fd, uint8_t *buf, size_t buflen, struct sockaddr *remote_ad
     return 0;
 }
 
-
 int write_step(ngtcp2_conn *conn, int fd, uint64_t stream_id, uint8_t *data, size_t datalen) {
     // Data and datalen is the data to be written
     // Buf and bufsize is a general use memory allocation (eg. to pass packets to subroutines)
@@ -144,7 +147,6 @@ int write_step(ngtcp2_conn *conn, int fd, uint64_t stream_id, uint8_t *data, siz
         if (rv != 0) {
             return rv;
         }
-
     }
 
     if (stream_id != -1) {
@@ -156,10 +158,6 @@ int write_step(ngtcp2_conn *conn, int fd, uint64_t stream_id, uint8_t *data, siz
         }
 
         rv = send_packet(fd, buf, pktlen);
-        
-            
-        // Wait until ts (now) before sending the next packet
-        // ngtcp2_conn_update_pkt_tx_time(conn, timestamp());
 
         if (rv != 0) {
             return rv;
@@ -167,4 +165,9 @@ int write_step(ngtcp2_conn *conn, int fd, uint64_t stream_id, uint8_t *data, siz
     }
 
     return 0;
+}
+
+// Processes preparing and sending all available acknowledge packets, handshake, etc.
+int send_nonstream_packets(ngtcp2_conn *conn, int fd) {
+    return write_step(conn, fd, -1, NULL, 0);
 }

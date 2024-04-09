@@ -14,3 +14,5 @@ int send_packet(int fd, uint8_t* pkt, size_t pktlen);
 int read_message(int fd, uint8_t *buf, size_t buflen, struct sockaddr *remote_addr, size_t remote_addrlen, size_t *bytes_read);
 
 int write_step(ngtcp2_conn *conn, int fd, uint64_t stream_id, uint8_t *data, size_t datalen);
+
+int send_nonstream_packets(ngtcp2_conn *conn, int fd);

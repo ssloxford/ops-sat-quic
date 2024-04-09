@@ -245,15 +245,6 @@ static int client_read_step(client *c) {
 
     size_t pktlen;
 
-    struct pollfd conn_poll;
-
-    // Create socket polling
-    conn_poll.fd = c->fd;
-    conn_poll.events = POLLIN;
-    
-    // Waits for there to be a datagram ready to read
-    poll(&conn_poll, 1, -1);
-
     for (;;) {
         rv = read_message(c->fd, buf, sizeof(buf), &remote_addr, sizeof(remote_addr), &pktlen);
 
@@ -297,6 +288,13 @@ static int client_read_step(client *c) {
             fprintf(stderr, "Failed to read packet: %s\n", ngtcp2_strerror(rv));
             return rv;
         }
+    }
+
+    // Send ACK packets
+    rv = send_nonstream_packets(c->conn, c->fd);
+
+    if (rv != 0) {
+        return rv;
     }
 
     return 0;
@@ -343,6 +341,8 @@ static int client_deinit(client *c) {
 int main(int argc, char **argv){
     client c;
 
+    struct pollfd polls[2];
+
     int rv;
 
     // TODO - Macro the max message length
@@ -362,30 +362,54 @@ int main(int argc, char **argv){
         return rv;
     }
 
+    polls[0].fd = c.fd;
+    polls[1].fd = STDIN_FILENO;
+
+    polls[0].events = polls[1].events = POLLIN;
+
+
     while (1) {
-        // Once the stream is opened, we're able to start sending stream data
-        if (c.stream_id != -1) {
-            fprintf(stdout, "Send: ");
-            fflush(stdout);
-            rv = read(STDIN_FILENO, message, 160);
-            // Replace newline character with null terminate
-            message[rv-1] = '\0';
-        }
+        if (c.stream_id == -1) {
+            // Send handshake data
+            rv = client_write_step(&c, NULL, 0);
 
-        if (strcmp(message, "quit") == 0) {
-            return client_deinit(&c);
-        }
+            if (rv != 0) {
+                return rv;
+            }
 
-        rv = client_write_step(&c, message, rv);
+            // Wait for there to be a UDP packet available
+            poll(polls, 1, -1);
 
-        if (rv != 0) {
-            return rv;
-        }
+            rv = client_read_step(&c);
 
-        rv = client_read_step(&c);
-        
-        if (rv != 0) {
-            return rv;
+            if (rv != 0) {
+                return rv;
+            }
+        } else {
+            // Stream is open. Wait for either line from STDIN or to recieve a packet
+            poll(polls, 2, -1);
+
+            if (polls[0].revents & POLLIN) {
+                rv = client_read_step(&c);
+
+                if (rv != 0) {
+                    return rv;
+                }
+            } else if (polls[1].revents & POLLIN) {
+                rv = read(STDIN_FILENO, message, 160);
+                // Replace newline character with null terminate
+                message[rv-1] = '\0';
+
+                if (strcmp(message, "quit") == 0) {
+                    return client_deinit(&c);
+                }
+
+                rv = client_write_step(&c, message, rv);
+
+                if (rv != 0) {
+                    return rv;
+                }
+            }
         }
     }
 
