@@ -90,7 +90,7 @@ static int client_resolve_and_connect(client *c, const char *target_host, const 
     return 0;
 }
 
-static int client_ngtcp2_init(client *c, char* server_ip) {
+static int client_ngtcp2_init(client *c, char* server_ip, char *server_port) {
     struct ngtcp2_settings settings;
     struct ngtcp2_transport_params params;
 
@@ -148,13 +148,14 @@ static int client_ngtcp2_init(client *c, char* server_ip) {
     settings.initial_ts = timestamp();
 
     // Enable debugging
-    // settings.log_printf = debug_log; // ngtcp2 debugging
+    settings.log_printf = debug_log; // ngtcp2 debugging
 
     ngtcp2_transport_params_default(&params);
 
     params.initial_max_streams_uni = 3;
     params.initial_max_stream_data_uni = BUF_SIZE;
     params.initial_max_data = BUF_SIZE;
+    params.max_udp_payload_size = 1200;
 
     // Allocate random destination and source connection IDs
     dcid.datalen = NGTCP2_MIN_INITIAL_DCIDLEN;
@@ -170,7 +171,7 @@ static int client_ngtcp2_init(client *c, char* server_ip) {
     }
 
     // Resolve provided hostname and port, and create a socket connected to it
-    rv = client_resolve_and_connect(c, server_ip, SERVER_PORT);
+    rv = client_resolve_and_connect(c, server_ip, server_port);
     if (rv != 0) {
         fprintf(stderr, "Failed to resolve and connect to target socket: %d\n", rv);
         return rv;
@@ -205,7 +206,7 @@ static ngtcp2_conn* get_conn (ngtcp2_crypto_conn_ref* ref) {
     return c->conn;
 }
 
-static int client_init(client *c, char* server_ip) {
+static int client_init(client *c, char* server_ip, char *server_port) {
     int rv;
 
     c->ref.get_conn = get_conn;
@@ -222,7 +223,7 @@ static int client_init(client *c, char* server_ip) {
         return rv;
     }
 
-    rv = client_ngtcp2_init(c, server_ip);
+    rv = client_ngtcp2_init(c, server_ip, server_port);
     if (rv != 0) {
         fprintf(stderr, "Failed to initialise ngtcp2 connection: %s\n", ngtcp2_strerror(rv));
         return rv;
@@ -315,6 +316,7 @@ static int client_deinit(client *c) {
 
     ngtcp2_tstamp ts = timestamp();
 
+    // TODO - ERR_NOBUF on this call after exchanging data frames. See docs for this function about this
     pktlen = ngtcp2_conn_write_connection_close(c->conn, &ps.path, NULL, buf, sizeof(buf), &ccerr, ts);
 
     if (pktlen < 0) {
@@ -338,24 +340,48 @@ static int client_deinit(client *c) {
     return 0;
 }
 
+void print_helpstring() {
+    printf("-h: Print help string\n");
+    printf("-i [ip]: Specifies IP to connect to. Default localhost\n");
+    printf("-p [port]: Specifies port to connect to. Default 11111\n");
+    printf("-d: Enable debug printing\n");
+}
+
 int main(int argc, char **argv){
     client c;
 
-    struct pollfd polls[2];
-
     int rv;
+    char opt;
+
+    struct pollfd polls[2];
 
     // TODO - Macro the max message length
     uint8_t message[160];
 
     char *server_ip = DEFAULT_IP;
+    char *server_port = SERVER_PORT;
 
-    if (argc > 1) {
-        // User has provided an IP to connect to
-        server_ip = argv[1];
+    while ((opt = getopt(argc, argv, "hdi:p:")) != -1) {
+        switch (opt) {
+            case 'h':
+                print_helpstring();
+                return 0;
+            case 'i':
+                server_ip = optarg;
+                break;
+            case 'p':
+                server_port = optarg;
+                break;
+            case 'd':
+                c.debug = 1;
+                break;
+            case '?':
+                printf("Unknown option -%c\n", optopt);
+                break;
+        }
     }
 
-    rv = client_init(&c, server_ip);
+    rv = client_init(&c, server_ip, server_port);
 
     // If client init failed, propagate error
     if (rv != 0) {

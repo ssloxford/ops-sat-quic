@@ -21,4 +21,6 @@ typedef struct _server {
 
     uint8_t *reply_data;
     size_t reply_data_len;
+
+    int debug;
 } server;

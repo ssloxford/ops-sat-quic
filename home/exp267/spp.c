@@ -8,12 +8,10 @@
 
 // TODO - Make all the error codes negative and macros
 
-// TODO - Check that packet data length fields accurately EXCLUDE the primary header
-
 // TODO - Warning when truncating significant bits?
 int construct_spp(SPP *spp, const uint8_t *payload, size_t payloadlen, uint8_t *data_field, pkt_type packet_type, seq_flag seq_flags, uint16_t spp_pkt_num, uint8_t udp_pkt_num, uint8_t udp_frag_count, uint8_t udp_frag_num) {
     if (payloadlen > SPP_MAX_DATA_LEN) {
-        fprintf(stderr, "Data of %ld bytes does not fit into payload field\n", payloadlen);
+        fprintf(stderr, "Data of %ld bytes does not fit into max payload field\n", payloadlen);
         return 1;
     }
     
@@ -133,9 +131,8 @@ int fragment_data(SPP **spp, const uint8_t *data, size_t datalen, int *packets_m
             data_this_packet = SPP_MAX_DATA_LEN;
         }
         
-        // TODO - We can decrease this to data_this_packet
         // Create the buffer that we'll point to in the SPP struct
-        user_data = malloc(SPP_MAX_DATA_LEN);
+        user_data = malloc(data_this_packet);
 
         if (user_data == NULL) {
             return -1;
@@ -152,7 +149,6 @@ int fragment_data(SPP **spp, const uint8_t *data, size_t datalen, int *packets_m
             seq_flag = cont;
         }
 
-        // TODO - seg fault in this call when making the copy from data (payload to be sent) to user_data (payload field of the SPP object)
         // *spp + i is the address of the ith element in the array at *spp
         rv = construct_spp(*spp + i, data + data_written, data_this_packet, user_data, telecommand, seq_flag, spp_pkt_count + i, udp_pkt_num, packets_needed, i);
 

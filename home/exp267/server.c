@@ -92,7 +92,7 @@ static int server_wolfssl_init(server *s) {
     return 0;
 }
 
-static int server_settings_init(ngtcp2_callbacks *callbacks, ngtcp2_settings *settings) {
+static int server_settings_init(ngtcp2_callbacks *callbacks, ngtcp2_settings *settings, int debug) {
     // Similar to client.c. Removed unnecessary recv_retry callback
     ngtcp2_callbacks local_callbacks = {
         NULL,
@@ -141,8 +141,9 @@ static int server_settings_init(ngtcp2_callbacks *callbacks, ngtcp2_settings *se
 
     ngtcp2_settings_default(settings);
     settings->initial_ts = timestamp();
-    // settings->log_printf = debug_log; // Allows ngtcp2 debug
-
+    if (debug) {
+        settings->log_printf = debug_log; // Allows ngtcp2 debug
+    }
     return 0;
 }
 
@@ -174,7 +175,7 @@ static ngtcp2_conn* get_conn (ngtcp2_crypto_conn_ref* ref) {
     return data->conn;
 }
 
-static int server_init(server *s) {
+static int server_init(server *s, char *server_port) {
     int rv;
 
     s->ref.user_data = s;
@@ -191,7 +192,7 @@ static int server_init(server *s) {
         return rv;
     }
 
-    rv = server_resolve_and_bind(s, SERVER_PORT);
+    rv = server_resolve_and_bind(s, server_port);
     if (rv != 0) {
         return rv;
     }
@@ -232,7 +233,7 @@ static int server_accept_connection(server *s, uint8_t *buf, size_t buflen, ngtc
     // First packet is acceptable, so create the ngtcp2_conn
     ngtcp2_transport_params_default(&params);
 
-    server_settings_init(&callbacks, &settings);
+    server_settings_init(&callbacks, &settings, s->debug);
 
     // Docs state the the original_dcid field must be set
     params.original_dcid = header.dcid;
@@ -244,6 +245,8 @@ static int server_accept_connection(server *s, uint8_t *buf, size_t buflen, ngtc
     params.initial_max_stream_data_uni = BUF_SIZE;
     // Will send up to BUF_SIZE bytes at a time
     params.initial_max_data = BUF_SIZE;
+
+    params.max_udp_payload_size = 1200;
 
     // Server DCID is client SCID. 
     ngtcp2_cid scid;
@@ -320,7 +323,7 @@ static int server_read_step(server *s) {
 
         // If got to here, the packet recieved is an acceptable QUIC packet
 
-        // remoteaddr populated by server_await_message
+        // remoteaddr populated by read_message
         ngtcp2_path path = {
             .local = {
                 .addr = &s->localsock,
@@ -368,17 +371,44 @@ static int server_deinit(server *s) {
     return 0;
 }
 
+void print_helpstring() {
+    printf("-h: Print help string\n");
+    printf("-p [port]: Specify port to use. Default 11111\n");
+    printf("-d: Enable debugging output\n");
+}
+
 int main(int argc, char **argv) {
     server s;
 
     int rv;
+    char opt;
+
+    char *server_port = SERVER_PORT;
+    s.debug = 0;
+
+    while ((opt = getopt(argc, argv, "hdp:")) != -1) {
+        switch (opt) {
+            case 'h':
+                print_helpstring();
+                return 0;
+            case 'p':
+                server_port = optarg;
+                break;
+            case 'd':
+                s.debug = 1;
+                break;
+            case '?':
+                printf("Unknown option: -%c\n", optopt);
+                break;
+        }
+    }
 
     // TODO - Macro the message size
     uint8_t message[160];
     s.reply_data = message;
 
     // Allocates the fd to listen for connections, and sets up the wolfSSL backend
-    rv = server_init(&s);
+    rv = server_init(&s, server_port);
     if (rv != 0) {
         return rv;
     }

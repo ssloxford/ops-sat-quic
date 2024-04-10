@@ -16,4 +16,6 @@ typedef struct _client {
     WOLFSSL* ssl;
     // *ctx to ensure the context is not deallocated
     WOLFSSL_CTX* ctx;
+
+    int debug;
 } client;

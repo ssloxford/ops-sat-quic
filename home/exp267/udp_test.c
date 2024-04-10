@@ -4,8 +4,11 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <errno.h>
+#include <poll.h>
 
 #include "utils.h"
+
+#define MSG_LEN 1024
 
 static int connect_udp_socket(int *fd, char *target_port, struct sockaddr *remoteaddr, socklen_t *remoteaddrlen) {
     struct addrinfo hints;
@@ -16,7 +19,6 @@ static int connect_udp_socket(int *fd, char *target_port, struct sockaddr *remot
     memset(&hints, 0, sizeof(hints));
 
     hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_DGRAM;
     hints.ai_protocol = IPPROTO_UDP;
 
     // Opens UDP socket and connects to localhost:target_port, saving the sockaddr to remoteaddr
@@ -25,8 +27,9 @@ static int connect_udp_socket(int *fd, char *target_port, struct sockaddr *remot
 
 int main(int argc, char** argv) {
     int fd, rv;
+    struct pollfd polls[2];
 
-    char buf[300];
+    char buf[MSG_LEN];
 
     struct sockaddr remoteaddr;
     socklen_t remoteaddrlen;
@@ -38,23 +41,32 @@ int main(int argc, char** argv) {
         return rv;
     }
 
+    polls[0].fd = fd;
+    polls[1].fd = STDIN_FILENO;
+
+    polls[0].events = polls[1].events = POLLIN;
+
     while (1) {
-        rv = read(STDIN_FILENO, buf, 300);
+        poll(polls, 2, -1);
 
-        if (rv > 2) {
-            printf("Sending data\n");
-            
-            buf[rv] = 0; // Null terminate
-            rv++;
-            send(fd, buf, rv, 0);
+        if (polls[0].revents & POLLIN) {
+            rv = recv(fd, buf, sizeof(buf), 0);
+
+            if (rv == -1) {
+                fprintf(stderr, "Failed to read from UDP socket: %s\n", strerror(errno));
+            }
+
+            printf("%s\n", buf);
+        } else if (polls[1].revents & POLLIN) {
+            rv = read(STDIN_FILENO, buf, sizeof(buf));
+
+            buf[rv-1] = 0; // Replace new line with null terminate
+
+            if (rv == -1) {
+                fprintf(stderr, "Failed to read from STDIN: %s\n", strerror(errno));
+            }
+
+            sendto(fd, buf, rv, 0, &remoteaddr, remoteaddrlen);
         }
-
-        rv = recv(fd, buf, 300, MSG_DONTWAIT);
-
-        if (rv == -1 && (errno == EWOULDBLOCK || errno == EAGAIN)) {
-            continue;
-        }
-
-        printf("%s\n", buf);
     }
 }
