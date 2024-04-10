@@ -10,7 +10,32 @@
 #include "client.h"
 #include "utils.h"
 #include "errors.h"
-#include "connection.h"
+// connection.h included by client.h
+// #include "connection.h"
+
+static int acked_stream_data_offset_cb(ngtcp2_conn *conn, int64_t stream_id, uint64_t offset, uint64_t datalen, void *user_data, void *stream_data) {
+    // The server has acknowledged all data in the range [offset, offset+datalen)    
+    client *c = user_data;
+
+    // Start on the dummy header
+    inflight_data *prev_ptr = c->inflight_head;
+    
+    for (inflight_data *ptr = prev_ptr->next; ptr != NULL; ptr = ptr->next) {
+        if (ptr->stream_id == stream_id && ptr->offset < (offset + datalen)) {
+            // This frame has been acked in this call. We can deallocate it
+            // Update the pointers
+            prev_ptr->next = ptr->next;
+
+            free(ptr->payload);
+            free(ptr);
+        }
+
+        // Keep tracking the previous pointer
+        prev_ptr = ptr;
+    }
+
+    return 0;
+}
 
 static int extend_max_local_streams_uni_cb(ngtcp2_conn *conn, uint64_t max_streams, void *user_data) {
     int64_t stream_id;
@@ -110,7 +135,7 @@ static int client_ngtcp2_init(client *c, char* server_ip, char *server_port) {
         ngtcp2_crypto_decrypt_cb,
         ngtcp2_crypto_hp_mask_cb,
         recv_stream_data_cb, /* recv_stream_data */
-        NULL, /* acked_stream_data_offset */
+        acked_stream_data_offset_cb, /* acked_stream_data_offset */
         NULL, /* stream_open */
         NULL, /* stream_close */
         NULL, /* recv_stateless_reset */
@@ -148,7 +173,9 @@ static int client_ngtcp2_init(client *c, char* server_ip, char *server_port) {
     settings.initial_ts = timestamp();
 
     // Enable debugging
-    settings.log_printf = debug_log; // ngtcp2 debugging
+    if (c->debug) {
+        settings.log_printf = debug_log; // ngtcp2 debugging
+    }
 
     ngtcp2_transport_params_default(&params);
 
@@ -212,8 +239,12 @@ static int client_init(client *c, char* server_ip, char *server_port) {
     c->ref.get_conn = get_conn;
     c->ref.user_data = c;
 
-    // TODO - Consider moving this to one of the other init funcs
     c->stream_id = -1;
+
+    // inflight_head is a dummy node
+    c->inflight_tail = c->inflight_head = malloc(sizeof(inflight_data));
+    c->inflight_tail->next = NULL;
+    c->sent_offset = 0;
 
     rand_init();
 
@@ -233,7 +264,23 @@ static int client_init(client *c, char* server_ip, char *server_port) {
 }
 
 static int client_write_step(client *c, uint8_t *data, size_t datalen) {
-    return write_step(c->conn, c->fd, c->stream_id, data, datalen);
+    inflight_data *inflight;
+    int rv;
+
+    rv = write_step(c->conn, c->fd, c->stream_id, data, datalen, &inflight, &c->sent_offset);
+
+    if (rv != 0) {
+        return rv;
+    }
+
+    // Stream data has been written. Update the in flight list
+    if (c->stream_id != -1) {
+        c->inflight_tail->next = inflight;
+        c->inflight_tail = inflight;    
+        inflight->next = NULL;
+    }
+
+    return 0;
 }
 
 static int client_read_step(client *c) {
@@ -360,6 +407,8 @@ int main(int argc, char **argv){
 
     char *server_ip = DEFAULT_IP;
     char *server_port = SERVER_PORT;
+
+    c.debug = 0;
 
     while ((opt = getopt(argc, argv, "hdi:p:")) != -1) {
         switch (opt) {

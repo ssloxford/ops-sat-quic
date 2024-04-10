@@ -13,7 +13,31 @@
 #include "utils.h"
 #include "errors.h"
 #include "server.h"
-#include "connection.h"
+//#include "connection.h"
+
+static int acked_stream_data_offset_cb(ngtcp2_conn *conn, int64_t stream_id, uint64_t offset, uint64_t datalen, void *user_data, void *stream_data) {
+    // The server has acknowledged all data in the range [offset, offset+datalen)    
+    server *s = user_data;
+
+    // Start on the dummy header
+    inflight_data *prev_ptr = s->inflight_head;
+    
+    for (inflight_data *ptr = prev_ptr->next; ptr != NULL; ptr = ptr->next) {
+        if (ptr->stream_id == stream_id && ptr->offset < (offset + datalen)) {
+            // This frame has been acked in this call. We can deallocate it
+            // Update the pointers
+            prev_ptr->next = ptr->next;
+
+            free(ptr->payload);
+            free(ptr);
+        }
+
+        // Keep tracking the previous pointer
+        prev_ptr = ptr;
+    }
+
+    return 0;
+}
 
 static int extend_max_local_streams_uni_cb(ngtcp2_conn *conn, uint64_t max_streams, void *user_data) {
     int64_t stream_id;
@@ -104,7 +128,7 @@ static int server_settings_init(ngtcp2_callbacks *callbacks, ngtcp2_settings *se
         ngtcp2_crypto_decrypt_cb,
         ngtcp2_crypto_hp_mask_cb,
         recv_stream_data_cb, /* recv_stream_data */
-        NULL, /* acked_stream_data_offset */
+        acked_stream_data_offset_cb, /* acked_stream_data_offset */
         NULL, /* stream_open */
         NULL, /* stream_close */
         NULL, /* recv_stateless_reset */
@@ -184,6 +208,11 @@ static int server_init(server *s, char *server_port) {
     // Server is not connected. No open stream
     s->connected = 0;
     s->stream_id = -1;
+
+    // inflight_head is a dummy node
+    s->inflight_tail = s->inflight_head = malloc(sizeof(inflight_data));
+    s->inflight_tail->next = NULL;
+    s->sent_offset = 0;
 
     rand_init();
 
@@ -362,7 +391,24 @@ static int server_read_step(server *s) {
 }
 
 static int server_write_step(server *s, uint8_t *data, size_t datalen) {
-    return write_step(s->conn, s->fd, s->stream_id, data, datalen);
+    inflight_data *inflight;
+    int rv;
+
+    rv = write_step(s->conn, s->fd, s->stream_id, data, datalen, &inflight, &s->sent_offset);
+
+    if (rv != 0) {
+        return rv;
+    }
+
+    if (s->stream_id != -1) {
+        // Update the existing tail
+        s->inflight_tail->next = inflight;
+        // Move the tail pointer
+        s->inflight_tail = inflight;
+        inflight->next = NULL;
+    }
+
+    return 0;
 }
 
 static int server_deinit(server *s) {

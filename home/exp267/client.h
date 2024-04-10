@@ -1,6 +1,8 @@
 #include <wolfssl/ssl.h>
 #include <ngtcp2/ngtcp2.h>
 
+#include "connection.h"
+
 typedef struct _client {
     ngtcp2_conn *conn;
     ngtcp2_crypto_conn_ref ref;
@@ -9,6 +11,9 @@ typedef struct _client {
 
     // TODO - Support multiple stream ids 
     uint64_t stream_id;
+
+    inflight_data *inflight_head, *inflight_tail;
+    uint64_t sent_offset;
 
     ngtcp2_sockaddr localsock, remotesock;
     ngtcp2_socklen locallen, remotelen;

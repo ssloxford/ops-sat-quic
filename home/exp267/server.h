@@ -3,6 +3,8 @@
 
 #include <wolfssl/ssl.h>
 
+#include "connection.h"
+
 // TODO - Comment structure variables
 typedef struct _server {
     ngtcp2_conn *conn;
@@ -12,6 +14,9 @@ typedef struct _server {
 
     int connected;
     uint64_t stream_id;
+
+    inflight_data *inflight_head, *inflight_tail;
+    uint64_t sent_offset;
 
     ngtcp2_sockaddr localsock;
     ngtcp2_socklen locallen;

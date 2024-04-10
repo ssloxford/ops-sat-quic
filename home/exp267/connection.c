@@ -14,19 +14,18 @@
 #include "utils.h"
 #include "errors.h"
 
-int prepare_packet(ngtcp2_conn *conn, uint64_t stream_id, uint8_t* buf, size_t buflen, size_t *pktlen, struct iovec *iov) {
+int prepare_packet(ngtcp2_conn *conn, uint64_t stream_id, uint8_t* buf, size_t buflen, size_t *pktlen, ngtcp2_ssize *wdatalen, struct iovec *iov) {
     // Write stream prepares the message to be sent into buf and returns size of the message
     ngtcp2_tstamp ts = timestamp();
     ngtcp2_pkt_info pi;
     ngtcp2_path_storage ps;
-    ngtcp2_ssize wdatalen; // wdatalen is the length of data within STREAM (data) frames only
 
     int rv;
 
     ngtcp2_path_storage_zero(&ps);
 
     // Need to cast *iov to (ngtcp2_vec*). Apparently safe: https://nghttp2.org/ngtcp2/types.html#c.ngtcp2_vec
-    rv = ngtcp2_conn_writev_stream(conn, &ps.path, &pi, buf, buflen, &wdatalen, NGTCP2_WRITE_STREAM_FLAG_NONE, stream_id, (ngtcp2_vec*) iov, 1, ts);
+    rv = ngtcp2_conn_writev_stream(conn, &ps.path, &pi, buf, buflen, wdatalen, NGTCP2_WRITE_STREAM_FLAG_NONE, stream_id, (ngtcp2_vec*) iov, 1, ts);
     if (rv < 0) {
         fprintf(stderr, "Trying to write to stream failed: %s\n", ngtcp2_strerror(rv));
         return rv;
@@ -50,7 +49,7 @@ int prepare_packet(ngtcp2_conn *conn, uint64_t stream_id, uint8_t* buf, size_t b
 }
 
 int prepare_nonstream_packet(ngtcp2_conn *conn, uint8_t *buf, size_t buflen, size_t *pktlen) {
-    return prepare_packet(conn, -1, buf, buflen, pktlen, NULL);
+    return prepare_packet(conn, -1, buf, buflen, pktlen, NULL, NULL);
 }
 
 int send_packet(int fd, uint8_t* pkt, size_t pktlen) {
@@ -117,7 +116,7 @@ int read_message(int fd, uint8_t *buf, size_t buflen, struct sockaddr *remote_ad
     return 0;
 }
 
-int write_step(ngtcp2_conn *conn, int fd, uint64_t stream_id, uint8_t *data, size_t datalen) {
+int write_step(ngtcp2_conn *conn, int fd, uint64_t stream_id, const uint8_t *data, size_t datalen, inflight_data **inflight, uint64_t *sent_offset) {
     // Data and datalen is the data to be written
     // Buf and bufsize is a general use memory allocation (eg. to pass packets to subroutines)
     size_t pktlen;
@@ -126,9 +125,6 @@ int write_step(ngtcp2_conn *conn, int fd, uint64_t stream_id, uint8_t *data, siz
     uint8_t buf[BUF_SIZE];
 
     int rv;
-
-    iov.iov_base = data;
-    iov.iov_len = datalen;
 
     // Send any non-stream packets (eg. handshake, ack, etc.)
     for (;;) {
@@ -150,18 +146,51 @@ int write_step(ngtcp2_conn *conn, int fd, uint64_t stream_id, uint8_t *data, siz
     }
 
     if (stream_id != -1) {
+        uint8_t *pkt_data = malloc(datalen);
+        ngtcp2_ssize stream_framelen;
+
+
+        if (pkt_data == NULL) {
+            return ERROR_OUT_OF_MEMORY;
+        }
+
+        // Copy the provided data into malloced buffer to allow storage in the ack tracking
+        memcpy(pkt_data, data, datalen);
+
+        iov.iov_base = pkt_data;
+        iov.iov_len = datalen;
+
         // A stream is open, so we will write to the stream
-        rv = prepare_packet(conn, stream_id, buf, sizeof(buf), &pktlen, &iov);
+        rv = prepare_packet(conn, stream_id, buf, sizeof(buf), &pktlen, &stream_framelen, &iov);
 
         if (rv != 0) {
+            free(pkt_data);
             return rv;
         }
 
         rv = send_packet(fd, buf, pktlen);
 
         if (rv != 0) {
+            free(pkt_data);
             return rv;
         }
+
+        // Allocate a new 
+        *inflight = malloc(sizeof(inflight_data));
+
+        if (*inflight == NULL) {
+            // If out of memory, make sure all allocated memory is freed
+            // Will mean that if this packet is not ACKed the data is lost
+            free(pkt_data);
+            return ERROR_OUT_OF_MEMORY;
+        }
+
+        (*inflight)->payload = pkt_data;
+        (*inflight)->payloadlen = stream_framelen;
+        (*inflight)->stream_id = stream_id;
+        (*inflight)->offset = *sent_offset;
+
+        *sent_offset = *sent_offset + stream_framelen;
     }
 
     return 0;
@@ -169,5 +198,6 @@ int write_step(ngtcp2_conn *conn, int fd, uint64_t stream_id, uint8_t *data, siz
 
 // Processes preparing and sending all available acknowledge packets, handshake, etc.
 int send_nonstream_packets(ngtcp2_conn *conn, int fd) {
-    return write_step(conn, fd, -1, NULL, 0);
+    // Only conn and fd will be used
+    return write_step(conn, fd, -1, NULL, 0, NULL, NULL);
 }
