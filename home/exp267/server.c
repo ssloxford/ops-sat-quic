@@ -10,9 +10,10 @@
 #include <sys/socket.h>
 #include <netdb.h>
 
+#include "server.h"
 #include "utils.h"
 #include "errors.h"
-#include "server.h"
+// Connection.h included by server.h. Repeat inclusion caused issues with repeat definitions of inflight_data
 //#include "connection.h"
 
 static int acked_stream_data_offset_cb(ngtcp2_conn *conn, int64_t stream_id, uint64_t offset, uint64_t datalen, void *user_data, void *stream_data) {
@@ -23,7 +24,7 @@ static int acked_stream_data_offset_cb(ngtcp2_conn *conn, int64_t stream_id, uin
     inflight_data *prev_ptr = s->inflight_head;
     
     for (inflight_data *ptr = prev_ptr->next; ptr != NULL; ptr = ptr->next) {
-        if (ptr->stream_id == stream_id && ptr->offset < (offset + datalen)) {
+        if (ptr->stream_id == stream_id && ptr->offset >= offset && ptr->offset < (offset + datalen)) {
             // This frame has been acked in this call. We can deallocate it
             // Update the pointers
             prev_ptr->next = ptr->next;
@@ -210,8 +211,8 @@ static int server_init(server *s, char *server_port) {
     s->stream_id = -1;
 
     // inflight_head is a dummy node
-    s->inflight_tail = s->inflight_head = malloc(sizeof(inflight_data));
-    s->inflight_tail->next = NULL;
+    s->inflight_head = malloc(sizeof(inflight_data));
+    s->inflight_head->next = NULL;
     s->sent_offset = 0;
 
     rand_init();
@@ -401,11 +402,8 @@ static int server_write_step(server *s, uint8_t *data, size_t datalen) {
     }
 
     if (s->stream_id != -1) {
-        // Update the existing tail
-        s->inflight_tail->next = inflight;
-        // Move the tail pointer
-        s->inflight_tail = inflight;
-        inflight->next = NULL;
+        inflight->next = s->inflight_head->next;
+        s->inflight_head->next = inflight;
     }
 
     return 0;

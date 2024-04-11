@@ -12,7 +12,7 @@ typedef struct _client {
     // TODO - Support multiple stream ids 
     uint64_t stream_id;
 
-    inflight_data *inflight_head, *inflight_tail;
+    inflight_data *inflight_head;
     uint64_t sent_offset;
 
     ngtcp2_sockaddr localsock, remotesock;

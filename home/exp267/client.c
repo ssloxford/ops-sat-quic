@@ -21,7 +21,7 @@ static int acked_stream_data_offset_cb(ngtcp2_conn *conn, int64_t stream_id, uin
     inflight_data *prev_ptr = c->inflight_head;
     
     for (inflight_data *ptr = prev_ptr->next; ptr != NULL; ptr = ptr->next) {
-        if (ptr->stream_id == stream_id && ptr->offset < (offset + datalen)) {
+        if (ptr->stream_id == stream_id && ptr->offset >= offset && ptr->offset < (offset + datalen)) {
             // This frame has been acked in this call. We can deallocate it
             // Update the pointers
             prev_ptr->next = ptr->next;
@@ -242,8 +242,8 @@ static int client_init(client *c, char* server_ip, char *server_port) {
     c->stream_id = -1;
 
     // inflight_head is a dummy node
-    c->inflight_tail = c->inflight_head = malloc(sizeof(inflight_data));
-    c->inflight_tail->next = NULL;
+    c->inflight_head = malloc(sizeof(inflight_data));
+    c->inflight_head->next = NULL;
     c->sent_offset = 0;
 
     rand_init();
@@ -275,9 +275,9 @@ static int client_write_step(client *c, uint8_t *data, size_t datalen) {
 
     // Stream data has been written. Update the in flight list
     if (c->stream_id != -1) {
-        c->inflight_tail->next = inflight;
-        c->inflight_tail = inflight;    
-        inflight->next = NULL;
+        // Insert after the dummy header node
+        inflight->next = c->inflight_head->next;
+        c->inflight_head->next = inflight;
     }
 
     return 0;
