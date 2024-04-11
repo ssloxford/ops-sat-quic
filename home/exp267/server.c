@@ -419,6 +419,8 @@ void print_helpstring() {
     printf("-h: Print help string\n");
     printf("-p [port]: Specify port to use. Default 11111\n");
     printf("-d: Enable debugging output\n");
+    printf("-f [file]: File to write recieved data into. Default stdout\n");
+    printf("-r: Enable echoing all data back to client\n");
 }
 
 int main(int argc, char **argv) {
