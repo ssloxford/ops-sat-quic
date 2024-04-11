@@ -17,7 +17,7 @@
 //#include "connection.h"
 
 static int acked_stream_data_offset_cb(ngtcp2_conn *conn, int64_t stream_id, uint64_t offset, uint64_t datalen, void *user_data, void *stream_data) {
-    // The server has acknowledged all data in the range [offset, offset+datalen)    
+    // The remote has acknowledged all data in the range [offset, offset+datalen)    
     server *s = user_data;
 
     // Start on the dummy header
@@ -276,7 +276,7 @@ static int server_accept_connection(server *s, uint8_t *buf, size_t buflen, ngtc
     // Will send up to BUF_SIZE bytes at a time
     params.initial_max_data = BUF_SIZE;
 
-    params.max_udp_payload_size = 1200;
+    params.max_udp_payload_size = 1280;
 
     // Server DCID is client SCID. 
     ngtcp2_cid scid;
@@ -428,9 +428,12 @@ int main(int argc, char **argv) {
     char opt;
 
     char *server_port = SERVER_PORT;
-    s.debug = 0;
 
-    while ((opt = getopt(argc, argv, "hdp:")) != -1) {
+    int output_fd = STDOUT_FILENO;
+    s.debug = 0;
+    s.reply = 0;
+
+    while ((opt = getopt(argc, argv, "hdp:f:r")) != -1) {
         switch (opt) {
             case 'h':
                 print_helpstring();
@@ -440,6 +443,15 @@ int main(int argc, char **argv) {
                 break;
             case 'd':
                 s.debug = 1;
+                break;
+            case 'r':
+                s.reply = 1;
+                break;
+            case 'f':
+                output_fd = open(optarg, O_WRONLY);
+                if (output_fd == -1) {
+                    fprintf(stderr, "Failed to open file %s\n", optarg);
+                }
                 break;
             case '?':
                 printf("Unknown option: -%c\n", optopt);
@@ -461,6 +473,7 @@ int main(int argc, char **argv) {
         rv = server_read_step(&s);
         if (rv != 0 && rv != ERROR_NO_NEW_MESSAGE) {
             if (rv == ERROR_DRAINING_STATE) {
+                // The connection is being closed. Server must process remaining packets (eg. ACK)
                 continue;
             }
             return rv;

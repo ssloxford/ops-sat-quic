@@ -304,13 +304,17 @@ void print_helpstring() {
     printf("-u: Run UDP connection in client mode\n");
 }
 
+void deinit(int udp_fd, int tcp_fd) {
+    close(udp_fd);
+    close(tcp_fd);
+}
+
 int main(int argc, char **argv) {
     int rv, packets_sent;
     int tcp_fd, udp_fd;
 
     struct sockaddr_storage udp_remote, tcp_remote;
     socklen_t udp_remotelen = sizeof(udp_remote), tcp_remotelen = sizeof(tcp_remote);
-    int udp_remote_set = 0;
     
     memset(&udp_remote, 0, udp_remotelen);
     memset(&tcp_remote, 0, tcp_remotelen);
@@ -333,7 +337,7 @@ int main(int argc, char **argv) {
     struct pollfd polls[2];
 
     char *udp_target_port;
-    int tcp_client = 0, udp_client = 0, udp_port_set = 0;
+    int tcp_client = 0, udp_client = 0, udp_port_set = 0, udp_remote_set = 0;
 
     // Process option flags
     while ((opt = getopt(argc, argv, "htp:u")) != -1) {
@@ -410,7 +414,7 @@ int main(int argc, char **argv) {
 
             if (rv == 0) {
                 printf("Remote shutdown TCP connection\n");
-                // TODO - Run a deinit?
+                deinit(udp_fd, tcp_fd);
                 return 0;
             } else if (rv == -1) {
                 fprintf(stderr, "Error when receiving TCP message: %s\n", strerror(errno));

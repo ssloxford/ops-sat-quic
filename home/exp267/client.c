@@ -182,7 +182,7 @@ static int client_ngtcp2_init(client *c, char* server_ip, char *server_port) {
     params.initial_max_streams_uni = 3;
     params.initial_max_stream_data_uni = BUF_SIZE;
     params.initial_max_data = BUF_SIZE;
-    params.max_udp_payload_size = 1200;
+    params.max_udp_payload_size = 1280;
 
     // Allocate random destination and source connection IDs
     dcid.datalen = NGTCP2_MIN_INITIAL_DCIDLEN;
@@ -363,8 +363,8 @@ static int client_deinit(client *c) {
 
     ngtcp2_tstamp ts = timestamp();
 
-    // TODO - ERR_NOBUF on this call after exchanging data frames. See docs for this function about this
-    pktlen = ngtcp2_conn_write_connection_close(c->conn, &ps.path, NULL, buf, sizeof(buf), &ccerr, ts);
+    // TODO - ERR_NOBUF on this call after exchanging data frames. See docs https://nghttp2.org/ngtcp2/ngtcp2_conn_write_connection_close.html
+    pktlen = ngtcp2_conn_write_connection_close(c->conn, &ps.path, NULL, buf, BUF_SIZE, &ccerr, ts);
 
     if (pktlen < 0) {
         fprintf(stderr, "Error when closing connection: %s\n", ngtcp2_strerror(pktlen));
@@ -391,6 +391,7 @@ void print_helpstring() {
     printf("-h: Print help string\n");
     printf("-i [ip]: Specifies IP to connect to. Default localhost\n");
     printf("-p [port]: Specifies port to connect to. Default 11111\n");
+    printf("-f [file]: Specifies source of transmission data. Default stdin\n");
     printf("-d: Enable debug printing\n");
 }
 
@@ -402,15 +403,16 @@ int main(int argc, char **argv){
 
     struct pollfd polls[2];
 
-    // TODO - Macro the max message length
-    uint8_t message[160];
+    int input_fd = STDIN_FILENO;
+
+    uint8_t payload[1024];
 
     char *server_ip = DEFAULT_IP;
     char *server_port = SERVER_PORT;
 
     c.debug = 0;
 
-    while ((opt = getopt(argc, argv, "hdi:p:")) != -1) {
+    while ((opt = getopt(argc, argv, "hdi:p:f:")) != -1) {
         switch (opt) {
             case 'h':
                 print_helpstring();
@@ -423,6 +425,12 @@ int main(int argc, char **argv){
                 break;
             case 'd':
                 c.debug = 1;
+                break;
+            case 'f':
+                input_fd = open(optarg, O_RDONLY);
+                if (input_fd == -1) {
+                    fprintf(stderr, "Failed to open file %s\n", optarg);
+                }
                 break;
             case '?':
                 printf("Unknown option -%c\n", optopt);
@@ -438,7 +446,7 @@ int main(int argc, char **argv){
     }
 
     polls[0].fd = c.fd;
-    polls[1].fd = STDIN_FILENO;
+    polls[1].fd = input_fd;
 
     polls[0].events = polls[1].events = POLLIN;
 
@@ -471,15 +479,26 @@ int main(int argc, char **argv){
                     return rv;
                 }
             } else if (polls[1].revents & POLLIN) {
-                rv = read(STDIN_FILENO, message, 160);
-                // Replace newline character with null terminate
-                message[rv-1] = '\0';
+                rv = read(input_fd, payload, sizeof(payload));
 
-                if (strcmp(message, "quit") == 0) {
+                if (rv == -1) {
+                    fprintf(stdout, "Failed to read from input: %s\n", strerror(errno));
+                    return -1;
+                }
+
+                if (rv == 0) {
+                    // End of file reached
+                    close(input_fd);
                     return client_deinit(&c);
                 }
 
-                rv = client_write_step(&c, message, rv);
+                if (input_fd == STDIN_FILENO) {
+                    // Null terminate the string
+                    payload[rv] = '\0';
+                    rv++;
+                }
+
+                rv = client_write_step(&c, payload, rv);
 
                 if (rv != 0) {
                     return rv;
