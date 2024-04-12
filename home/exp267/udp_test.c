@@ -31,11 +31,11 @@ int main(int argc, char** argv) {
 
     char buf[MSG_LEN];
 
-    struct sockaddr remoteaddr;
-    socklen_t remoteaddrlen;
+    struct sockaddr_storage remoteaddr;
+    socklen_t remoteaddrlen = sizeof(remoteaddr);
 
     // Accept target port in cmd and connect to it
-    rv = connect_udp_socket(&fd, argv[1], &remoteaddr, &remoteaddrlen);
+    rv = connect_udp_socket(&fd, argv[1], (struct sockaddr*) &remoteaddr, &remoteaddrlen);
 
     if (rv != 0) {
         return rv;
@@ -66,7 +66,7 @@ int main(int argc, char** argv) {
                 fprintf(stderr, "Failed to read from STDIN: %s\n", strerror(errno));
             }
 
-            sendto(fd, buf, rv, 0, &remoteaddr, remoteaddrlen);
+            sendto(fd, buf, sizeof(buf), 0, (struct sockaddr*) &remoteaddr, remoteaddrlen);
         }
     }
 }

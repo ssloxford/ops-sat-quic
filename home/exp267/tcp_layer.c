@@ -418,11 +418,12 @@ int main(int argc, char **argv) {
     polls[0].events = polls[1].events = POLLIN;
 
     for (;;) {
-        // Wait for either connection to have data
-        if (!udp_remote_set) {
+        if (udp_remote_set) {
+            // Wait for either connection to have data
             poll(polls, 2, -1);
         } else {
-            // If no udp remote, only wait on the UDP socket
+            // If no udp remote, only wait on the UDP socket.
+            // TCP messages will stack up in the network buffer and be processed once the remote UDP address is known
             poll(polls, 1, -1);
         }
 
