@@ -257,10 +257,8 @@ static int handle_tcp_packet(int udp_fd, uint8_t *buf, size_t buflen, size_t pkt
                 found_pkt->next->last = found_pkt->last;
             }
 
-            printf("Deallocating completed payload\n");
             // Deallocate the list node and associated buffer
             free(found_pkt->partial_payload);
-            printf("Deallocating list node\n");
             free(found_pkt);
         }
     }
@@ -303,7 +301,6 @@ static int handle_udp_packet(int tcp_fd, uint8_t *buf, size_t buflen, size_t pkt
         }
     }
 
-    printf("Deallocating generated SPP array\n");
     rv = free_spp_array(packets, packets_made);
 
     if (rv != 0) {
@@ -415,36 +412,21 @@ int main(int argc, char **argv) {
         return rv;
     }
 
-    polls[0].fd = tcp_fd;
-    polls[1].fd = udp_fd;
+    polls[0].fd = udp_fd;
+    polls[1].fd = tcp_fd;
 
     polls[0].events = polls[1].events = POLLIN;
 
     for (;;) {
         // Wait for either connection to have data
-        poll(polls, 2, -1);
+        if (!udp_remote_set) {
+            poll(polls, 2, -1);
+        } else {
+            // If no udp remote, only wait on the UDP socket
+            poll(polls, 1, -1);
+        }
 
         if (polls[0].revents & POLLIN) {
-            // printf("TCP message recieved\n");
-
-            rv = recv(tcp_fd, buf, sizeof(buf), 0);
-
-            if (rv == 0) {
-                printf("Remote shutdown TCP connection\n");
-                deinit(udp_fd, tcp_fd);
-                return 0;
-            } else if (rv == -1) {
-                fprintf(stderr, "Error when receiving TCP message: %s\n", strerror(errno));
-            }
-
-            if (!udp_remote_set) {
-                fprintf(stderr, "Warning: No UDP remote address set. Discarding TCP packet\n");
-                continue;
-            }
-
-            // TCP packet recieved
-            handle_tcp_packet(udp_fd, buf, sizeof(buf), rv, &incomp_pkts, (struct sockaddr*) &udp_remote, udp_remotelen);
-        } else if (polls[1].revents & POLLIN) {
             // printf("UDP message recieved\n");
             
             if (!udp_remote_set) {
@@ -457,12 +439,29 @@ int main(int argc, char **argv) {
 
             if (rv == -1) {
                 fprintf(stderr, "Error when receiving UDP message: %s\n", strerror(errno));
+                continue;
             }
 
             // UDP packet recieved
             handle_udp_packet(tcp_fd, buf, sizeof(buf), rv, spp_count, udp_count, &packets_sent);
             udp_count++;
             spp_count += packets_sent;
+        } else if (polls[1].revents & POLLIN) {
+            // printf("TCP message recieved\n");
+
+            rv = recv(tcp_fd, buf, sizeof(buf), 0);
+
+            if (rv == 0) {
+                printf("Remote shutdown TCP connection\n");
+                deinit(udp_fd, tcp_fd);
+                return 0;
+            } else if (rv == -1) {
+                fprintf(stderr, "Error when receiving TCP message: %s\n", strerror(errno));
+                continue;
+            }
+
+            // TCP packet recieved
+            handle_tcp_packet(udp_fd, buf, sizeof(buf), rv, &incomp_pkts, (struct sockaddr*) &udp_remote, udp_remotelen);
         }
     }
 }
