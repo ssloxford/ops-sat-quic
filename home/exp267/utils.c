@@ -12,6 +12,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "utils.h"
 #include "errors.h"
 
 // Code taken from ngtcp2/examples/simpleclient.c
@@ -94,15 +95,20 @@ int resolve_and_process(int *save_fd, const char *target_host, const char* targe
             *remotesocklen = rp->ai_addrlen;
             memcpy(remotesock, rp->ai_addr, rp->ai_addrlen);
 
-            // Set the local path of the client
-            if (getsockname(fd, localsock, localsocklen) == -1)
-                return ERROR_GET_SOCKNAME;
+            if (localsock != NULL) {
+                // Set the local path of the client
+                if (getsockname(fd, localsock, localsocklen) == -1)
+                    return ERROR_GET_SOCKNAME;
+            }
 
             // Exit the loop when the first successful connection is made
             break;
         } else if (is_server && bind(fd, rp->ai_addr, rp->ai_addrlen) == 0) {
-            *localsocklen = rp->ai_addrlen;
-            memcpy(localsock, rp->ai_addr, rp->ai_addrlen);
+            if (localsock != NULL) {
+                *localsocklen = rp->ai_addrlen;
+                memcpy(localsock, rp->ai_addr, rp->ai_addrlen);
+            }
+
             break;
         }
 
@@ -122,4 +128,29 @@ int resolve_and_process(int *save_fd, const char *target_host, const char* targe
     // Save the fd of the open socket connected to the endpoint
     *save_fd = fd;
     return 0;
+}
+
+int bind_udp_socket(int *fd, char *server_port) {
+    struct addrinfo hints;
+
+    memset(&hints, 0, sizeof(hints));
+
+    hints.ai_family = AF_INET; // IPv4 addresses
+    hints.ai_protocol = IPPROTO_UDP; // UDP sockets only
+    hints.ai_flags = AI_PASSIVE | AI_NUMERICSERV; // Port is provided as a number rather than string eg. "ssh"
+
+    return resolve_and_process(fd, INADDR_ANY, server_port, &hints, 1, NULL, NULL, NULL, NULL);
+}
+
+int connect_udp_socket(int *fd, char *server_ip, char *server_port, struct sockaddr *remoteaddr, socklen_t *remoteaddrlen) {
+    struct addrinfo hints;
+
+    memset(&hints, 0, sizeof(hints));
+
+    hints.ai_family = AF_INET;
+    hints.ai_protocol = IPPROTO_UDP;
+    hints.ai_flags = AI_NUMERICSERV;
+
+    // Opens UDP socket and saves the remote address into remoteaddr
+    return resolve_and_process(fd, server_ip, server_port, &hints, 0, NULL, NULL, remoteaddr, remoteaddrlen);
 }

@@ -18,3 +18,7 @@ uint64_t timestamp(void);
 void debug_log(void *user_data, const char *format, ...);
 
 int resolve_and_process(int *save_fd, const char *target_host, const char *target_port, struct addrinfo *hints, int is_server, struct sockaddr *localsock, socklen_t *localsocklen, struct sockaddr *remotesock, socklen_t *remotesocklen);
+
+int bind_udp_socket(int *fd, char *server_port);
+
+int connect_udp_socket(int *fd, char *server_ip, char *server_port, struct sockaddr *remoteaddr, socklen_t *remoteaddrlen);

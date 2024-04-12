@@ -31,20 +31,17 @@ typedef struct _incomplete_packet {
     struct _incomplete_packet *next, *last;
 } incomplete_packet;
 
-// Function for debug only
 static int connect_tcp_socket(int *fd, char *server_port, struct sockaddr *remoteaddr, socklen_t *remoteaddrlen) {
     struct addrinfo hints;
-
-    struct sockaddr_storage addrstorage;
-    socklen_t socklen = sizeof(addrstorage);
 
     memset(&hints, 0, sizeof(hints));
 
     hints.ai_family = AF_INET;
     hints.ai_protocol = IPPROTO_TCP;
+    hints.ai_flags = AI_NUMERICSERV;
 
     // Opens TCP socket and connects to localhost:target_port, saving the sockaddr to remoteaddr
-    return resolve_and_process(fd, "localhost", server_port, &hints, 0, (struct sockaddr*) &addrstorage, &socklen, remoteaddr, remoteaddrlen);
+    return resolve_and_process(fd, "localhost", server_port, &hints, 0, NULL, NULL, remoteaddr, remoteaddrlen);
 }
 
 static int bind_and_accept_tcp_socket(int *fd, char *server_port, struct sockaddr *remoteaddr, socklen_t *remoteaddrlen) {
@@ -52,19 +49,15 @@ static int bind_and_accept_tcp_socket(int *fd, char *server_port, struct sockadd
 
     int rv;
 
-    // Dummy variables so that we can use the resolve and process function without segfault
-    struct sockaddr_storage addrstorage;
-    socklen_t socklen = sizeof(addrstorage);
-
     int listen_fd;
 
     memset(&hints, 0, sizeof(hints));
 
     hints.ai_family = AF_INET; // IPv4 addresses
     hints.ai_protocol = IPPROTO_TCP; // TCP socket
-    hints.ai_flags = AI_PASSIVE;
+    hints.ai_flags = AI_PASSIVE | AI_NUMERICSERV;
 
-    rv = resolve_and_process(&listen_fd, INADDR_ANY, server_port, &hints, 1, (struct sockaddr*) &addrstorage, &socklen, NULL, NULL);
+    rv = resolve_and_process(&listen_fd, INADDR_ANY, server_port, &hints, 1, NULL, NULL, NULL, NULL);
 
     if (rv != 0) {
         return rv;
@@ -91,37 +84,6 @@ static int bind_and_accept_tcp_socket(int *fd, char *server_port, struct sockadd
     // rv is the fd of the port connected to remote
     *fd = rv;
     return 0;
-}
-
-static int bind_udp_socket(int *fd, char *server_port) {
-    struct addrinfo hints;
-
-    // Dummy variables so that we can use the resolve and process function without segfault
-    struct sockaddr_storage addrstorage;
-    socklen_t socklen = sizeof(addrstorage);
-
-    memset(&hints, 0, sizeof(hints));
-
-    hints.ai_family = AF_INET; // IPv4 addresses
-    hints.ai_protocol = IPPROTO_UDP; // UDP sockets only
-    hints.ai_flags = AI_PASSIVE | AI_NUMERICSERV; // Port is provided as a number rather than string eg. "ssh"
-
-    return resolve_and_process(fd, INADDR_ANY, server_port, &hints, 1, (struct sockaddr*) &addrstorage, &socklen, NULL, NULL);
-}
-
-static int connect_udp_socket(int *fd, char *server_port, struct sockaddr *remoteaddr, socklen_t *remoteaddrlen) {
-    struct addrinfo hints;
-
-    struct sockaddr_storage addrstorage;
-    socklen_t socklen = sizeof(addrstorage);
-
-    memset(&hints, 0, sizeof(hints));
-
-    hints.ai_family = AF_INET;
-    hints.ai_protocol = IPPROTO_UDP;
-
-    // Opens TCP socket and connects to localhost:target_port, saving the sockaddr to remoteaddr
-    return resolve_and_process(fd, "localhost", server_port, &hints, 0, (struct sockaddr*) &addrstorage, &socklen, remoteaddr, remoteaddrlen);
 }
 
 static void add_to_node(const SPP *spp, incomplete_packet *node) {
@@ -384,7 +346,7 @@ int main(int argc, char **argv) {
     // Init the UDP socket
     if (udp_client) {
         // Connect to the provided UDP port
-        rv = connect_udp_socket(&udp_fd, udp_target_port, (struct sockaddr*) &udp_remote, &udp_remotelen);
+        rv = connect_udp_socket(&udp_fd, "localhost", udp_target_port, (struct sockaddr*) &udp_remote, &udp_remotelen);
         udp_remote_set = 1;
     } else {
         // Listen on provided socket
