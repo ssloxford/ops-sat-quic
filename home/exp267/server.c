@@ -259,7 +259,7 @@ static int server_accept_connection(server *s, uint8_t *buf, size_t buflen, ngtc
     // If it is, write the data into the header structure
     rv = ngtcp2_accept(&header, buf, buflen);
     if (rv != 0) {
-        fprintf(stderr, "First packet could not be parsed or was unacceptable\n");
+        fprintf(stderr, "First packet could not be parsed or was unacceptable: %s\n", ngtcp2_strerror(rv));
         return rv;
     }
 
@@ -391,6 +391,13 @@ static int server_read_step(server *s) {
         }
     }
 
+    // Send ACK packets
+    rv = send_nonstream_packets(s->conn, s->fd, buf, sizeof(buf));
+
+    if (rv != 0) {
+        return rv;
+    }
+
     return 0;
 }
 
@@ -398,7 +405,8 @@ static int server_write_step(server *s, uint8_t *data, size_t datalen) {
     inflight_data *inflight;
     int rv;
 
-    rv = write_step(s->conn, s->fd, s->stream_id, data, datalen, &inflight, &s->sent_offset);
+    // TODO - Implement taking and providing fin bit
+    rv = write_step(s->conn, s->fd, s->stream_id, 0, data, datalen, &inflight, &s->sent_offset);
 
     if (rv != 0) {
         return rv;

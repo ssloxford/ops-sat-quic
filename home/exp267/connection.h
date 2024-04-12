@@ -17,7 +17,7 @@ typedef struct _inflight_data {
     struct _inflight_data *next;
 } inflight_data;
 
-int prepare_packet(ngtcp2_conn *conn, uint64_t stream_id, uint8_t* buf, size_t buflen, size_t *pktlen, ngtcp2_ssize *wdatalen, struct iovec *iov);
+int prepare_packet(ngtcp2_conn *conn, uint64_t stream_id, uint8_t* buf, size_t buflen, size_t *pktlen, ngtcp2_ssize *wdatalen, struct iovec *iov, int fin);
 
 int prepare_nonstream_packet(ngtcp2_conn *conn, uint8_t *buf, size_t buflen, size_t *pktlen);
 
@@ -25,6 +25,6 @@ int send_packet(int fd, uint8_t* pkt, size_t pktlen);
 
 int read_message(int fd, uint8_t *buf, size_t buflen, struct sockaddr *remote_addr, size_t remote_addrlen, size_t *bytes_read);
 
-int write_step(ngtcp2_conn *conn, int fd, uint64_t stream_id, const uint8_t *data, size_t datalen, inflight_data **inflight, uint64_t *sent_offset);
+int write_step(ngtcp2_conn *conn, int fd, uint64_t stream_id, int fin, const uint8_t *data, size_t datalen, inflight_data **inflight, uint64_t *sent_offset);
 
-int send_nonstream_packets(ngtcp2_conn *conn, int fd);
+int send_nonstream_packets(ngtcp2_conn *conn, int fd, uint8_t *buf, size_t buflen);

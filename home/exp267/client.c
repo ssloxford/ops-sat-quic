@@ -274,7 +274,8 @@ static int client_write_step(client *c, uint8_t *data, size_t datalen) {
     inflight_data *inflight;
     int rv;
 
-    rv = write_step(c->conn, c->fd, c->stream_id, data, datalen, &inflight, &c->sent_offset);
+    // TODO - Implement deciding when fin
+    rv = write_step(c->conn, c->fd, c->stream_id, 0, data, datalen, &inflight, &c->sent_offset);
 
     if (rv != 0) {
         return rv;
@@ -346,7 +347,7 @@ static int client_read_step(client *c) {
     }
 
     // Send ACK packets
-    rv = send_nonstream_packets(c->conn, c->fd);
+    rv = send_nonstream_packets(c->conn, c->fd, buf, sizeof(buf));
 
     if (rv != 0) {
         return rv;

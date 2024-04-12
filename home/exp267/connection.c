@@ -14,7 +14,7 @@
 #include "utils.h"
 #include "errors.h"
 
-int prepare_packet(ngtcp2_conn *conn, uint64_t stream_id, uint8_t* buf, size_t buflen, size_t *pktlen, ngtcp2_ssize *wdatalen, struct iovec *iov) {
+int prepare_packet(ngtcp2_conn *conn, uint64_t stream_id, uint8_t* buf, size_t buflen, size_t *pktlen, ngtcp2_ssize *wdatalen, struct iovec *iov, int fin) {
     // Write stream prepares the message to be sent into buf and returns size of the message
     ngtcp2_tstamp ts = timestamp();
     ngtcp2_pkt_info pi;
@@ -24,8 +24,14 @@ int prepare_packet(ngtcp2_conn *conn, uint64_t stream_id, uint8_t* buf, size_t b
 
     ngtcp2_path_storage_zero(&ps);
 
+    int flag = NGTCP2_WRITE_STREAM_FLAG_NONE;
+    if (fin) {
+        // This is the final stream frame for this stream
+        flag |= NGTCP2_WRITE_STREAM_FLAG_FIN;
+    }
+
     // Need to cast *iov to (ngtcp2_vec*). Apparently safe: https://nghttp2.org/ngtcp2/types.html#c.ngtcp2_vec
-    rv = ngtcp2_conn_writev_stream(conn, &ps.path, &pi, buf, buflen, wdatalen, NGTCP2_WRITE_STREAM_FLAG_NONE, stream_id, (ngtcp2_vec*) iov, 1, ts);
+    rv = ngtcp2_conn_writev_stream(conn, &ps.path, &pi, buf, buflen, wdatalen, flag, stream_id, (ngtcp2_vec*) iov, 1, ts);
     if (rv < 0) {
         fprintf(stderr, "Trying to write to stream failed: %s\n", ngtcp2_strerror(rv));
         return rv;
@@ -40,16 +46,12 @@ int prepare_packet(ngtcp2_conn *conn, uint64_t stream_id, uint8_t* buf, size_t b
         // Update pktlen with the length of the produced packet
         *pktlen = rv;
     }
-
-    
-    // Wait until ts (now) before sending the next packet
-    // ngtcp2_conn_update_pkt_tx_time(conn, ts);
     
     return 0;
 }
 
 int prepare_nonstream_packet(ngtcp2_conn *conn, uint8_t *buf, size_t buflen, size_t *pktlen) {
-    return prepare_packet(conn, -1, buf, buflen, pktlen, NULL, NULL);
+    return prepare_packet(conn, -1, buf, buflen, pktlen, NULL, NULL, 0);
 }
 
 int send_packet(int fd, uint8_t* pkt, size_t pktlen) {
@@ -116,7 +118,7 @@ int read_message(int fd, uint8_t *buf, size_t buflen, struct sockaddr *remote_ad
     return 0;
 }
 
-int write_step(ngtcp2_conn *conn, int fd, uint64_t stream_id, const uint8_t *data, size_t datalen, inflight_data **inflight, uint64_t *sent_offset) {
+int write_step(ngtcp2_conn *conn, int fd, uint64_t stream_id, int fin, const uint8_t *data, size_t datalen, inflight_data **inflight, uint64_t *sent_offset) {
     // Data and datalen is the data to be written
     // Buf and bufsize is a general use memory allocation (eg. to pass packets to subroutines)
     size_t pktlen;
@@ -126,26 +128,8 @@ int write_step(ngtcp2_conn *conn, int fd, uint64_t stream_id, const uint8_t *dat
 
     int rv;
 
-    // Send any non-stream packets (eg. handshake, ack, etc.)
-    for (;;) {
-        rv = prepare_nonstream_packet(conn, buf, sizeof(buf), &pktlen);
-        if (rv == ERROR_NO_NEW_MESSAGE) {
-            // No more "housekeeping" packets to send. Continue to data packet
-            break;
-        }
-
-        if (rv != 0) {
-            return rv;
-        }
-
-        rv = send_packet(fd, buf, pktlen);
-
-        if (rv != 0) {
-            return rv;
-        }
-    }
-
     if (stream_id != -1) {
+        // There's an open stream
         uint8_t *pkt_data = malloc(datalen);
         ngtcp2_ssize stream_framelen;
 
@@ -161,7 +145,8 @@ int write_step(ngtcp2_conn *conn, int fd, uint64_t stream_id, const uint8_t *dat
         iov.iov_len = datalen;
 
         // A stream is open, so we will write to the stream
-        rv = prepare_packet(conn, stream_id, buf, sizeof(buf), &pktlen, &stream_framelen, &iov);
+        // Will also add "housekeeping" frames to the packet
+        rv = prepare_packet(conn, stream_id, buf, sizeof(buf), &pktlen, &stream_framelen, &iov, fin);
 
         if (rv != 0) {
             free(pkt_data);
@@ -191,13 +176,41 @@ int write_step(ngtcp2_conn *conn, int fd, uint64_t stream_id, const uint8_t *dat
         (*inflight)->offset = *sent_offset;
 
         *sent_offset = *sent_offset + stream_framelen;
+        
+        
+    }
+
+    // If there are any "housekeeping" frames that didn't fit into the above packet, send them now
+    // Will likely only send packets if the above code wasn't run. Housekeeping frames are typically small
+    rv = send_nonstream_packets(conn, fd, buf, sizeof(buf));
+
+    if (rv != 0) {
+        return rv;
     }
 
     return 0;
 }
 
 // Processes preparing and sending all available acknowledge packets, handshake, etc.
-int send_nonstream_packets(ngtcp2_conn *conn, int fd) {
-    // Only conn and fd will be used
-    return write_step(conn, fd, -1, NULL, 0, NULL, NULL);
+int send_nonstream_packets(ngtcp2_conn *conn, int fd, uint8_t *buf, size_t buflen) {
+    size_t pktlen;
+    int rv;
+
+    for (;;) {
+        rv = prepare_nonstream_packet(conn, buf, buflen, &pktlen);
+        if (rv == ERROR_NO_NEW_MESSAGE) {
+            // No more "housekeeping" packets to send. Return 
+            return 0;
+        }
+
+        if (rv != 0) {
+            return rv;
+        }
+
+        rv = send_packet(fd, buf, pktlen);
+
+        if (rv != 0) {
+            return rv;
+        }
+    }
 }
