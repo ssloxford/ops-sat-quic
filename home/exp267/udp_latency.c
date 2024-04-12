@@ -5,6 +5,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <stdint.h>
 
 #include "utils.h"
 
@@ -22,6 +23,7 @@ void print_helpstring() {
     printf("-s [port]: Opens a server end listening on the specified port\n");
     printf("-c [port]: Opens a client end connected to the specified port\n");
     printf("-d [ms]: Sets the delay applied to packets in ms. Default 0\n");
+    printf("-l [chance]: Sets the packet loss chance. Default 0\n");
 }
 
 waiting_pkt* make_node(uint8_t *data, size_t datalen, int delay, time_t start_time) {
@@ -45,7 +47,7 @@ waiting_pkt* make_node(uint8_t *data, size_t datalen, int delay, time_t start_ti
 
 int main(int argc, char **argv) {
     char opt;
-    int rv, tmp;
+    int rv, tmp, discard_packet;
 
     time_t start_time = time(NULL);
 
@@ -69,6 +71,10 @@ int main(int argc, char **argv) {
     int timeout;
 
     int delay_ms = 0;
+    double loss_chance = 0;
+
+    rand_init();
+    uint8_t rand_byte, cutoff;
 
     // Lists have dummy headers
     waiting_pkt left_waiting_pkts, right_waiting_pkts;
@@ -77,7 +83,7 @@ int main(int argc, char **argv) {
 
     left_waiting_pkts.next = right_waiting_pkts.next = NULL;
 
-    while ((opt = getopt(argc, argv, "hs:c:d:")) != -1) {
+    while ((opt = getopt(argc, argv, "hs:c:d:l:")) != -1) {
         switch (opt) {
             case 'h':
                 print_helpstring();
@@ -107,6 +113,9 @@ int main(int argc, char **argv) {
             case 'd':
                 delay_ms = atoi(optarg);
                 break;
+            case 'l':
+                loss_chance = atof(optarg);
+                break;
             case '?':
                 printf("Unknown option -%c\n", optopt);
                 break;
@@ -123,6 +132,21 @@ int main(int argc, char **argv) {
         printf("Must specify at least one server end\n");
         return -1;
     }
+
+    if (delay_ms < 0) {
+        printf("Delay cannot be negative. Setting to 0\n");
+        delay_ms = 0;
+    }
+
+    if (loss_chance < 0) {
+        printf("Loss chance cannot be negative. Setting to 0\n");
+        loss_chance = 0;
+    } else if (loss_chance > 1) {
+        printf("Loss chance cannot be greater than 1. Setting to 1\n");
+        loss_chance = 1;
+    }
+
+    cutoff = UINT8_MAX * loss_chance;
 
     // Resolving sockets
     if (left_is_server) {
@@ -236,6 +260,15 @@ int main(int argc, char **argv) {
 
             // All pending packets have been processed. Return to the poll call
         } else {
+            // RNG to determine if we need to drop this packet
+            rand_bytes(&rand_byte, 1);
+
+            if (rand_byte < cutoff) {
+                discard_packet = 1;
+            } else {
+                discard_packet = 0;
+            }
+
             // Poll continued due to recieved message
             buf = malloc(MAX_UDP_PAYLOAD);
 
@@ -257,6 +290,12 @@ int main(int argc, char **argv) {
                 if (rv == -1) {
                     fprintf(stderr, "Error when left receiving message: %s\n", strerror(errno));
                     return -1;
+                }
+
+                // If dropping this packet, free the buffer it's been read into and return to the top of the loop
+                if (discard_packet) {
+                    free(buf);
+                    continue;
                 }
 
                 pkt_ptr = make_node(buf, rv, delay_ms, start_time);
@@ -281,6 +320,11 @@ int main(int argc, char **argv) {
                 if (rv == -1) {
                     fprintf(stderr, "Error when right receiving message: %s\n", strerror(errno));
                     return -1;
+                }
+
+                if (discard_packet) {
+                    free(buf);
+                    continue;
                 }
 
                 pkt_ptr = make_node(buf, rv, delay_ms, start_time);
