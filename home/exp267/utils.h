@@ -3,6 +3,7 @@
 #include <netdb.h>
 
 #define BUF_SIZE 32*1024 // 32kb buffer
+#define MAX_UDP_PAYLOAD NGTCP2_MAX_UDP_PAYLOAD_SIZE
 
 void rand_init();
 

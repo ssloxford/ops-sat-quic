@@ -1,5 +1,6 @@
 #include "utils.h"
 #include "spp.h"
+#include "errors.h"
 
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -12,7 +13,6 @@
 #include <unistd.h>
 
 #define TCP_PORT "11112"
-#define MAX_UDP_PACKET_SIZE 1200
 
 // TODO - Timeout on these?
 typedef struct _incomplete_packet {
@@ -36,7 +36,7 @@ static int connect_tcp_socket(int *fd, char *server_port, struct sockaddr *remot
     struct addrinfo hints;
 
     struct sockaddr_storage addrstorage;
-    socklen_t socklen;
+    socklen_t socklen = sizeof(addrstorage);
 
     memset(&hints, 0, sizeof(hints));
 
@@ -54,7 +54,7 @@ static int bind_and_accept_tcp_socket(int *fd, char *server_port, struct sockadd
 
     // Dummy variables so that we can use the resolve and process function without segfault
     struct sockaddr_storage addrstorage;
-    socklen_t socklen;
+    socklen_t socklen = sizeof(addrstorage);
 
     int listen_fd;
 
@@ -98,7 +98,7 @@ static int bind_udp_socket(int *fd, char *server_port) {
 
     // Dummy variables so that we can use the resolve and process function without segfault
     struct sockaddr_storage addrstorage;
-    socklen_t socklen;
+    socklen_t socklen = sizeof(addrstorage);
 
     memset(&hints, 0, sizeof(hints));
 
@@ -113,7 +113,7 @@ static int connect_udp_socket(int *fd, char *server_port, struct sockaddr *remot
     struct addrinfo hints;
 
     struct sockaddr_storage addrstorage;
-    socklen_t socklen;
+    socklen_t socklen = sizeof(addrstorage);
 
     memset(&hints, 0, sizeof(hints));
 
@@ -124,7 +124,7 @@ static int connect_udp_socket(int *fd, char *server_port, struct sockaddr *remot
     return resolve_and_process(fd, "localhost", server_port, &hints, 0, (struct sockaddr*) &addrstorage, &socklen, remoteaddr, remoteaddrlen);
 }
 
-static void add_to_node(SPP *spp, incomplete_packet *node) {
+static void add_to_node(const SPP *spp, incomplete_packet *node) {
     int payload_length = SPP_PAYLOAD_LENGTH(spp->primary_header.packet_data_length);
 
     node->frags_recieved += 1;
@@ -132,40 +132,40 @@ static void add_to_node(SPP *spp, incomplete_packet *node) {
 
     // TODO - Update timeout
 
-    // TODO - Check these mem addresses
+    // Offset is the max data length times the packet frag number
     // We assume that all previous packets have carried the max data len
     memcpy(node->partial_payload + (SPP_MAX_DATA_LEN * spp->secondary_header.udp_frag_num), spp->user_data, payload_length);
 }
 
-static incomplete_packet* insert_new_node(SPP *spp, incomplete_packet *last, incomplete_packet *next) {
+static incomplete_packet* insert_new_node(const SPP *spp, incomplete_packet *last, incomplete_packet *next) {
     incomplete_packet *node = malloc(sizeof(incomplete_packet));
 
     if (node == NULL) {
-        // TODO - Out of memory error
         return NULL;
     }
 
-    uint8_t *payload = malloc(MAX_UDP_PACKET_SIZE);
+    uint8_t *payload = malloc(MAX_UDP_PAYLOAD);
 
     if (payload == NULL) {
-        // TODO - Out of memory error
+        fprintf(stderr, "Warning: Out of memory. Could not insert new node\n");
+        free(node);
         return NULL;
     }
+
+    node->partial_payload = payload;
 
     node->packet_number = spp->secondary_header.udp_packet_num;
     node->frag_count = spp->secondary_header.udp_frag_count;
 
     node->frags_recieved = 0;
     node->packet_length = 0;
-    node->partial_payload = payload;
 
     node->next = next;
-    node->last = last;
-
     if (next != NULL) {
         next->last = node;
     }
 
+    node->last = last;
     last->next = node;
 
     add_to_node(spp, node);
@@ -176,7 +176,7 @@ static incomplete_packet* insert_new_node(SPP *spp, incomplete_packet *last, inc
 static int handle_tcp_packet(int udp_fd, uint8_t *buf, size_t buflen, size_t pktlen, incomplete_packet *incomp_pkts, const struct sockaddr *udp_addr, socklen_t addrlen) {
     int rv;
 
-    size_t bytes_remaining, bytes_deserialised;
+    size_t bytes_deserialised = 0;
 
     SPP spp;
     uint8_t spp_payload[SPP_MAX_DATA_LEN];
@@ -186,13 +186,10 @@ static int handle_tcp_packet(int udp_fd, uint8_t *buf, size_t buflen, size_t pkt
     incomplete_packet *pkt_ptr, *found_pkt;
 
     spp.user_data = spp_payload;
-    
-    // rv is the number of bytes read into buf
-    bytes_remaining = pktlen;
-    bytes_deserialised = 0;
 
     // Loop allows multiple contiguous SPP packets in the TCP payload
-    while (bytes_remaining > bytes_deserialised) {
+    // TODO - Check there's not an out by one error
+    while (pktlen > bytes_deserialised) {
         rv = deserialise_spp(buf+bytes_deserialised, &spp);
 
         if (rv < 0) {
@@ -202,18 +199,26 @@ static int handle_tcp_packet(int udp_fd, uint8_t *buf, size_t buflen, size_t pkt
         // Allows us to keep track of where to start the next SPP packet
         bytes_deserialised += rv;
 
+        if (spp.primary_header.pkt_id.apid != SPP_APID) {
+            // Packet not intended for me
+            continue;
+        }
+
         // UDP packet number we're searching for in the linked list of incomplete packets
         searching_udp_pkt_num = spp.secondary_header.udp_packet_num;
 
         // Search the incomplete packets list for this UDP packet number
-        for (pkt_ptr = incomp_pkts;; pkt_ptr = pkt_ptr->next) {
+        for (pkt_ptr = incomp_pkts;;) {
             if (pkt_ptr->next == NULL) {
-                // Insert the new node 
+                // At the end of the list. Insert new node on the end
                 found_pkt = insert_new_node(&spp, pkt_ptr, pkt_ptr->next);
+                if (found_pkt == NULL) {
+                    return ERROR_OUT_OF_MEMORY;
+                }
                 break;
             }
             
-            // UDP packet number of the current node
+            // UDP packet number of the node being checked
             node_udp_pkt_num = pkt_ptr->next->packet_number;
 
             if (node_udp_pkt_num == searching_udp_pkt_num) {
@@ -228,6 +233,9 @@ static int handle_tcp_packet(int udp_fd, uint8_t *buf, size_t buflen, size_t pkt
             } else {
                 // next packet number is greater than the search number, so insert here
                 found_pkt = insert_new_node(&spp, pkt_ptr, pkt_ptr->next);
+                if (found_pkt == NULL) {
+                    return ERROR_OUT_OF_MEMORY;
+                }
                 break;
             }
         }
@@ -249,11 +257,19 @@ static int handle_tcp_packet(int udp_fd, uint8_t *buf, size_t buflen, size_t pkt
                 found_pkt->next->last = found_pkt->last;
             }
 
+            printf("Deallocating completed payload\n");
             // Deallocate the list node and associated buffer
             free(found_pkt->partial_payload);
+            printf("Deallocating list node\n");
             free(found_pkt);
         }
     }
+
+    if (bytes_deserialised != pktlen) {
+        fprintf(stderr, "Warning: Bytes deserialised does not match bytes received\n");
+    }
+
+    return 0;
 }
 
 static int handle_udp_packet(int tcp_fd, uint8_t *buf, size_t buflen, size_t pktlen, uint16_t spp_count, uint8_t udp_count, int *packets_sent) {
@@ -287,6 +303,7 @@ static int handle_udp_packet(int tcp_fd, uint8_t *buf, size_t buflen, size_t pkt
         }
     }
 
+    printf("Deallocating generated SPP array\n");
     rv = free_spp_array(packets, packets_made);
 
     if (rv != 0) {
@@ -421,7 +438,7 @@ int main(int argc, char **argv) {
             }
 
             if (!udp_remote_set) {
-                fprintf(stderr, "Warning: No UDP remote was set. Discarding TCP packet\n");
+                fprintf(stderr, "Warning: No UDP remote address set. Discarding TCP packet\n");
                 continue;
             }
 

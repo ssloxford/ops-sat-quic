@@ -15,7 +15,7 @@ typedef struct _client {
     inflight_data *inflight_head;
     uint64_t sent_offset;
 
-    ngtcp2_sockaddr localsock, remotesock;
+    ngtcp2_sockaddr_union localsock, remotesock;
     ngtcp2_socklen locallen, remotelen;
     
     WOLFSSL* ssl;

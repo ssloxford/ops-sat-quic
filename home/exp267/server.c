@@ -23,7 +23,8 @@ static int acked_stream_data_offset_cb(ngtcp2_conn *conn, int64_t stream_id, uin
     // Start on the dummy header
     inflight_data *prev_ptr = s->inflight_head;
     
-    for (inflight_data *ptr = prev_ptr->next; ptr != NULL; ptr = ptr->next) {
+    // Must update using prev_ptr->next as ptr may have been deallocated
+    for (inflight_data *ptr = prev_ptr->next; ptr != NULL; ptr = prev_ptr->next) {
         if (ptr->stream_id == stream_id && ptr->offset >= offset && ptr->offset < (offset + datalen)) {
             // This frame has been acked in this call. We can deallocate it
             // Update the pointers
@@ -31,10 +32,10 @@ static int acked_stream_data_offset_cb(ngtcp2_conn *conn, int64_t stream_id, uin
 
             free(ptr->payload);
             free(ptr);
+        } else {
+            // Keep tracking the previous pointer
+            prev_ptr = ptr;
         }
-
-        // Keep tracking the previous pointer
-        prev_ptr = ptr;
     }
 
     return 0;
@@ -185,7 +186,7 @@ static int server_resolve_and_bind(server *s, const char *server_port) {
 
     // Resolves the local port, opens an fd and binds it to the address,
     // and updates the local sockaddr and socklen in server
-    rv = resolve_and_process(&s->fd, INADDR_ANY, server_port, &hints, 1, &s->localsock, &s->locallen, NULL, NULL);
+    rv = resolve_and_process(&s->fd, INADDR_ANY, server_port, &hints, 1, (ngtcp2_sockaddr*) &s->localsock, &s->locallen, NULL, NULL);
 
     if (rv != 0) {
         return rv;
@@ -214,6 +215,8 @@ static int server_init(server *s, char *server_port) {
     s->inflight_head = malloc(sizeof(inflight_data));
     s->inflight_head->next = NULL;
     s->sent_offset = 0;
+
+    s->locallen = sizeof(s->localsock);
 
     rand_init();
 
@@ -276,7 +279,7 @@ static int server_accept_connection(server *s, uint8_t *buf, size_t buflen, ngtc
     // Will send up to BUF_SIZE bytes at a time
     params.initial_max_data = BUF_SIZE;
 
-    params.max_udp_payload_size = 1280;
+    params.max_udp_payload_size = MAX_UDP_PAYLOAD;
 
     // Server DCID is client SCID. 
     ngtcp2_cid scid;
@@ -356,7 +359,7 @@ static int server_read_step(server *s) {
         // remoteaddr populated by read_message
         ngtcp2_path path = {
             .local = {
-                .addr = &s->localsock,
+                .addr = (ngtcp2_sockaddr*) &s->localsock,
                 .addrlen = s->locallen,
             },
             .remote = {

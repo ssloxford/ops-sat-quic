@@ -20,18 +20,22 @@ static int acked_stream_data_offset_cb(ngtcp2_conn *conn, int64_t stream_id, uin
     // Start on the dummy header
     inflight_data *prev_ptr = c->inflight_head;
     
-    for (inflight_data *ptr = prev_ptr->next; ptr != NULL; ptr = ptr->next) {
+    // Must use prev_ptr to update ptr since ptr may have been deallocated
+    // prev_ptr tracks 1 behind ptr is an invariant
+    for (inflight_data *ptr = prev_ptr->next; ptr != NULL; ptr = prev_ptr->next) {
         if (ptr->stream_id == stream_id && ptr->offset >= offset && ptr->offset < (offset + datalen)) {
             // This frame has been acked in this call. We can deallocate it
-            // Update the pointers
+
+            // Skip the prev_ptr next over the node being deallocated
             prev_ptr->next = ptr->next;
 
+            // Remove this node
             free(ptr->payload);
             free(ptr);
+        } else {
+            // Not ackowledging this node, so track prev_ptr forward
+            prev_ptr = ptr;
         }
-
-        // Keep tracking the previous pointer
-        prev_ptr = ptr;
     }
 
     return 0;
@@ -106,7 +110,7 @@ static int client_resolve_and_connect(client *c, const char *target_host, const 
 
     // Resolves target host and port, opens connection to it,
     // and updates variables fd, and local and remote sockaddr and socklen in client
-    rv = resolve_and_process(&c->fd, target_host, target_port, &hints, 0, &c->localsock, &c->locallen, &c->remotesock, &c->remotelen);
+    rv = resolve_and_process(&c->fd, target_host, target_port, &hints, 0, (ngtcp2_sockaddr*) &c->localsock, &c->locallen, (ngtcp2_sockaddr*) &c->remotesock, &c->remotelen);
 
     if (rv != 0) {
         return rv;
@@ -182,7 +186,7 @@ static int client_ngtcp2_init(client *c, char* server_ip, char *server_port) {
     params.initial_max_streams_uni = 3;
     params.initial_max_stream_data_uni = BUF_SIZE;
     params.initial_max_data = BUF_SIZE;
-    params.max_udp_payload_size = 1280;
+    params.max_udp_payload_size = MAX_UDP_PAYLOAD;
 
     // Allocate random destination and source connection IDs
     dcid.datalen = NGTCP2_MIN_INITIAL_DCIDLEN;
@@ -206,11 +210,11 @@ static int client_ngtcp2_init(client *c, char* server_ip, char *server_port) {
 
     struct ngtcp2_path path = {
         .local = {
-            .addr = &c->localsock,
+            .addr = (ngtcp2_sockaddr*) &c->localsock,
             .addrlen = c->locallen,
         },
         .remote = {
-            .addr = &c->remotesock,
+            .addr = (ngtcp2_sockaddr*) &c->remotesock,
             .addrlen = c->remotelen,
         },
         .user_data = NULL
@@ -245,6 +249,9 @@ static int client_init(client *c, char* server_ip, char *server_port) {
     c->inflight_head = malloc(sizeof(inflight_data));
     c->inflight_head->next = NULL;
     c->sent_offset = 0;
+
+    c->locallen = sizeof(c->localsock);
+    c->remotelen = sizeof(c->remotesock);
 
     rand_init();
 
@@ -284,7 +291,7 @@ static int client_write_step(client *c, uint8_t *data, size_t datalen) {
 }
 
 static int client_read_step(client *c) {
-    struct sockaddr remote_addr;
+    ngtcp2_sockaddr_union remote_addr;
     ngtcp2_version_cid version;
 
     uint8_t buf[BUF_SIZE];
@@ -294,7 +301,7 @@ static int client_read_step(client *c) {
     size_t pktlen;
 
     for (;;) {
-        rv = read_message(c->fd, buf, sizeof(buf), &remote_addr, sizeof(remote_addr), &pktlen);
+        rv = read_message(c->fd, buf, sizeof(buf), (ngtcp2_sockaddr*) &remote_addr, sizeof(remote_addr), &pktlen);
 
         if (rv == ERROR_NO_NEW_MESSAGE) {
             return 0;
@@ -320,11 +327,11 @@ static int client_read_step(client *c) {
         // remoteaddr populated by await_message
         ngtcp2_path path = {
             .local = {
-                .addr = &c->localsock,
+                .addr = (ngtcp2_sockaddr*) &c->localsock,
                 .addrlen = c->locallen,
             },
             .remote = {
-                .addr = &remote_addr,
+                .addr = (ngtcp2_sockaddr*) &remote_addr,
                 .addrlen = sizeof(remote_addr),
             }
         };

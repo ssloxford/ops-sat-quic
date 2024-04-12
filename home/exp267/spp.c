@@ -115,7 +115,8 @@ int fragment_data(SPP **spp, const uint8_t *data, size_t datalen, int *packets_m
 
     *packets_made = 0;
 
-    *spp = malloc(packets_needed * sizeof(SPP));
+    // Creates an array of SPPs with length packets_needed
+    *spp = calloc(packets_needed, sizeof(SPP));
 
     if (*spp == NULL) {
         return -1;
@@ -150,13 +151,14 @@ int fragment_data(SPP **spp, const uint8_t *data, size_t datalen, int *packets_m
         }
 
         // *spp + i is the address of the ith element in the array at *spp
-        rv = construct_spp(*spp + i, data + data_written, data_this_packet, user_data, telecommand, seq_flag, spp_pkt_count + i, udp_pkt_num, packets_needed, i);
+        // TODO - Figure out if this should be TC or TM, or if it doesn't matter
+        rv = construct_spp((*spp) + i, data + data_written, data_this_packet, user_data, telecommand, seq_flag, spp_pkt_count + i, udp_pkt_num, packets_needed, i);
 
         if (rv != 0) {
             return rv;
         }
 
-        *packets_made = *packets_made + 1;
+        (*packets_made)++;
     }
 
     return 0;
