@@ -173,7 +173,9 @@ static int client_ngtcp2_init(client *c, char* server_ip, char *server_port) {
     };
 
     ngtcp2_settings_default(&settings);
-    // Set initial timestamp. Exact value is unimportant
+    // Set initial timestamp. Exact value is unimportant. 
+    // By setting to timestamp, we can use timestamp() throughout for accurate deltas
+    // Timestamp in nanosecond resolution
     settings.initial_ts = timestamp();
 
     // Enable debugging
@@ -346,8 +348,8 @@ static int client_read_step(client *c) {
         }
     }
 
-    // Send ACK packets
-    rv = send_nonstream_packets(c->conn, c->fd, buf, sizeof(buf));
+    // Send ACK frames
+    rv = send_nonstream_packets(c->conn, c->fd, buf, sizeof(buf), -1);
 
     if (rv != 0) {
         return rv;
@@ -356,7 +358,7 @@ static int client_read_step(client *c) {
     return 0;
 }
 
-static int client_deinit(client *c) {
+static int client_close_connection(client *c) {
     uint8_t buf[BUF_SIZE];
     ngtcp2_path_storage ps;
     ngtcp2_ccerr ccerr;
@@ -384,15 +386,15 @@ static int client_deinit(client *c) {
     if (rv != 0) {
         return rv;
     }
+}
 
+static void client_deinit(client *c) {
     ngtcp2_conn_del(c->conn);
 
     wolfSSL_free(c->ssl);
     wolfSSL_CTX_free(c->ctx);
 
     close(c->fd);
-
-    return 0;
 }
 
 void print_helpstring() {
@@ -417,6 +419,9 @@ int main(int argc, char **argv){
 
     char *server_ip = DEFAULT_IP;
     char *server_port = SERVER_PORT;
+
+    ngtcp2_tstamp expiry, delta_time;
+    int timeout;
 
     c.debug = 0;
 
@@ -468,8 +473,20 @@ int main(int argc, char **argv){
                 return rv;
             }
 
+            timeout = get_timeout(c.conn);
+
             // Wait for there to be a UDP packet available
-            poll(polls, 1, -1);
+            rv = poll(polls, 1, timeout);
+
+            if (rv == 0) {
+                // Timeout occured
+                rv = handle_timeout(c.conn, c.fd);
+                if (rv == ERROR_DROP_CONNECTION) {
+                    // TODO - Maybe a printf in to say we idle timed out
+                    return 0;
+                }
+                continue;
+            }
 
             rv = client_read_step(&c);
 
@@ -478,7 +495,19 @@ int main(int argc, char **argv){
             }
         } else {
             // Stream is open. Wait for either line from STDIN or to recieve a packet
-            poll(polls, 2, -1);
+            timeout = get_timeout(c.conn);
+            
+            // Timeout may be extremely short
+            rv = poll(polls, 2, timeout);
+
+            if (rv == 0) {
+                // Timeout occured
+                rv = handle_timeout(c.conn, c.fd);
+                if (rv == ERROR_DROP_CONNECTION) {
+                    return 0;
+                }
+                continue;
+            }
 
             if (polls[0].revents & POLLIN) {
                 rv = client_read_step(&c);
@@ -497,12 +526,15 @@ int main(int argc, char **argv){
                 if (rv == 0) {
                     // End of file reached
                     close(input_fd);
-                    return client_deinit(&c);
+                    client_close_connection(&c);
+                    client_deinit(&c);
+                    return 0;
                 }
 
                 if (input_fd == STDIN_FILENO) {
                     // Null terminate the string
-                    payload[rv] = '\0';
+                    // TODO - Could cause buffer overstep if rv = buflen
+                    payload[rv-1] = '\0';
                     rv++;
                 }
 

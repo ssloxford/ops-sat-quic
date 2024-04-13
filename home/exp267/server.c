@@ -43,13 +43,19 @@ static int acked_stream_data_offset_cb(ngtcp2_conn *conn, int64_t stream_id, uin
 
 static int extend_max_local_streams_uni_cb(ngtcp2_conn *conn, uint64_t max_streams, void *user_data) {
     int64_t stream_id;
+
+    server *s = user_data;
+
+    if (!s->reply) {
+        return 0;
+    }
+
     int rv = ngtcp2_conn_open_uni_stream(conn, &stream_id, NULL);
     if (rv < 0) {
         fprintf(stderr, "Failed to open new uni stream: %s\n", ngtcp2_strerror(rv));
         return ERROR_NEW_STREAM;
     }
 
-    server *s = (server*) user_data;
     s->stream_id = stream_id;
 
     return 0;
@@ -319,20 +325,6 @@ static int server_read_step(server *s) {
 
     size_t pktlen;
 
-    struct pollfd conn_poll;
-
-    // Create socket polling
-    conn_poll.fd = s->fd;
-    conn_poll.events = POLLIN;
-
-    // Waits for the fd saved to the server to be ready to read. No timeout
-    rv = poll(&conn_poll, 1, -1);
-
-    if (rv == -1) {
-        fprintf(stderr, "Poll error: %s\n", strerror(errno));
-        return rv;
-    }
-
     for (;;) {
         rv = read_message(s->fd, buf, sizeof(buf), &remote_addr, sizeof(remote_addr), &pktlen);
 
@@ -392,7 +384,7 @@ static int server_read_step(server *s) {
     }
 
     // Send ACK packets
-    rv = send_nonstream_packets(s->conn, s->fd, buf, sizeof(buf));
+    rv = send_nonstream_packets(s->conn, s->fd, buf, sizeof(buf), -1);
 
     if (rv != 0) {
         return rv;
@@ -442,6 +434,11 @@ int main(int argc, char **argv) {
 
     char *server_port = SERVER_PORT;
 
+    struct pollfd conn_poll;
+
+    ngtcp2_tstamp expiry, delta_time;
+    int timeout;
+
     int output_fd = STDOUT_FILENO;
     s.debug = 0;
     s.reply = 0;
@@ -475,6 +472,7 @@ int main(int argc, char **argv) {
     // TODO - Macro the message size
     uint8_t message[160];
     s.reply_data = message;
+    s.reply_data_len = -1;
 
     // Allocates the fd to listen for connections, and sets up the wolfSSL backend
     rv = server_init(&s, server_port);
@@ -482,7 +480,32 @@ int main(int argc, char **argv) {
         return rv;
     }
 
+    // Create socket polling
+    conn_poll.fd = s.fd;
+    conn_poll.events = POLLIN;
+
     while (1) {
+        if (s.connected) {
+            // s.conn only valid when s.connected
+            timeout = get_timeout(s.conn);
+        } else {
+            // Wait indefinitely for a connection
+            timeout = -1;
+        }
+
+        // Waits for the fd saved to the server to be ready to read. No timeout
+        rv = poll(&conn_poll, 1, timeout);
+
+        if (rv == -1) {
+            fprintf(stderr, "Poll error: %s\n", strerror(errno));
+            return rv;
+        }
+
+        if (rv == 0) {
+            handle_timeout(s.conn, s.fd);
+            continue;
+        }
+
         rv = server_read_step(&s);
         if (rv != 0 && rv != ERROR_NO_NEW_MESSAGE) {
             if (rv == ERROR_DRAINING_STATE) {
@@ -492,6 +515,7 @@ int main(int argc, char **argv) {
             return rv;
         }
 
+        // TODO - Deal with this call for when not sending data
         rv = server_write_step(&s, s.reply_data, s.reply_data_len);
         if (rv != 0) {
             return rv;

@@ -135,6 +135,7 @@ int write_step(ngtcp2_conn *conn, int fd, uint64_t stream_id, int fin, const uin
 
 
         if (pkt_data == NULL) {
+            fprintf(stderr, "Warning: Failed to allocate buffer memory of length %ld to write packet\n", datalen);
             return ERROR_OUT_OF_MEMORY;
         }
 
@@ -160,12 +161,13 @@ int write_step(ngtcp2_conn *conn, int fd, uint64_t stream_id, int fin, const uin
             return rv;
         }
 
-        // Allocate a new 
+        // Allocate a new inflight data node
         *inflight = malloc(sizeof(inflight_data));
 
         if (*inflight == NULL) {
             // If out of memory, make sure all allocated memory is freed
             // Will mean that if this packet is not ACKed the data is lost
+            fprintf(stderr, "Warning: Failed to allocate new node to track inflight data\n");
             free(pkt_data);
             return ERROR_OUT_OF_MEMORY;
         }
@@ -176,13 +178,11 @@ int write_step(ngtcp2_conn *conn, int fd, uint64_t stream_id, int fin, const uin
         (*inflight)->offset = *sent_offset;
 
         *sent_offset = *sent_offset + stream_framelen;
-        
-        
     }
 
     // If there are any "housekeeping" frames that didn't fit into the above packet, send them now
     // Will likely only send packets if the above code wasn't run. Housekeeping frames are typically small
-    rv = send_nonstream_packets(conn, fd, buf, sizeof(buf));
+    rv = send_nonstream_packets(conn, fd, buf, sizeof(buf), -1);
 
     if (rv != 0) {
         return rv;
@@ -192,11 +192,12 @@ int write_step(ngtcp2_conn *conn, int fd, uint64_t stream_id, int fin, const uin
 }
 
 // Processes preparing and sending all available acknowledge packets, handshake, etc.
-int send_nonstream_packets(ngtcp2_conn *conn, int fd, uint8_t *buf, size_t buflen) {
+int send_nonstream_packets(ngtcp2_conn *conn, int fd, uint8_t *buf, size_t buflen, int limit) {
     size_t pktlen;
     int rv;
 
-    for (;;) {
+    // Limit less than 0 is treated as no limit
+    for (int i = 0; limit < 0 || i < limit; i++) {
         rv = prepare_nonstream_packet(conn, buf, buflen, &pktlen);
         if (rv == ERROR_NO_NEW_MESSAGE) {
             // No more "housekeeping" packets to send. Return 
@@ -213,4 +214,29 @@ int send_nonstream_packets(ngtcp2_conn *conn, int fd, uint8_t *buf, size_t bufle
             return rv;
         }
     }
+
+    return 0;
+}
+
+int handle_timeout(ngtcp2_conn *conn, int fd) {
+    int rv;
+
+    // Docs are incredibly sparse on this
+    // Basically just adjusts internal state to inform writev_stream of what to do next
+    rv = ngtcp2_conn_handle_expiry(conn, timestamp());
+
+    if (rv == NGTCP2_ERR_IDLE_CLOSE) {
+        return ERROR_DROP_CONNECTION;
+    }
+
+    uint8_t buf[BUF_SIZE];
+
+    // Send a single non-stream packet
+    rv = send_nonstream_packets(conn, fd, buf, sizeof(buf), 1);
+
+    if (rv != 0) {
+        return rv;
+    }
+
+    return 0;
 }

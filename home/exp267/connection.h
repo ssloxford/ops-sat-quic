@@ -27,4 +27,6 @@ int read_message(int fd, uint8_t *buf, size_t buflen, struct sockaddr *remote_ad
 
 int write_step(ngtcp2_conn *conn, int fd, uint64_t stream_id, int fin, const uint8_t *data, size_t datalen, inflight_data **inflight, uint64_t *sent_offset);
 
-int send_nonstream_packets(ngtcp2_conn *conn, int fd, uint8_t *buf, size_t buflen);
+int send_nonstream_packets(ngtcp2_conn *conn, int fd, uint8_t *buf, size_t buflen, int limit);
+
+int handle_timeout(ngtcp2_conn *conn, int fd);

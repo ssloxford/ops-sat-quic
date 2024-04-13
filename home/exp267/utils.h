@@ -22,3 +22,5 @@ int resolve_and_process(int *save_fd, const char *target_host, const char *targe
 int bind_udp_socket(int *fd, char *server_port);
 
 int connect_udp_socket(int *fd, char *server_ip, char *server_port, struct sockaddr *remoteaddr, socklen_t *remoteaddrlen);
+
+int get_timeout(ngtcp2_conn *conn);

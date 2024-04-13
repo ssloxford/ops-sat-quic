@@ -11,6 +11,7 @@
 #include <time.h>
 #include <string.h>
 #include <unistd.h>
+#include <limits.h>
 
 #include "utils.h"
 #include "errors.h"
@@ -153,4 +154,35 @@ int connect_udp_socket(int *fd, char *server_ip, char *server_port, struct socka
 
     // Opens UDP socket and saves the remote address into remoteaddr
     return resolve_and_process(fd, server_ip, server_port, &hints, 0, NULL, NULL, remoteaddr, remoteaddrlen);
+}
+
+int get_timeout(ngtcp2_conn *conn) {
+    ngtcp2_tstamp expiry, delta_time, now = timestamp();
+
+    uint64_t timeout;
+
+    // The timestamp (according to timestamp()) of the next time-sensitive intervention
+    // Conn expiry is updated as calls to writev_stream etc. are made
+    expiry = ngtcp2_conn_get_expiry(conn);
+
+    if (expiry == UINT64_MAX) {
+        // Not waiting on any expiry
+        return -1;
+    } else {
+        // Expiry should be ahead of timestamp()
+        delta_time = expiry - now;
+        if (delta_time < 0) {
+            // Expiry to wait on has passed. Continue immediately
+            return 0;
+        } else {
+            // Return millisecond resolution. Timestamp uses nanosecond resolution
+            // Will truncate to a millisecond. Round up to not underestimate
+            timeout = delta_time / (1000 * 1000);
+            if (timeout >= INT_MAX) {
+                // Clamp the value down to max int value. We can just set another wait if needed (INT_MAX ms will be a while)
+                return INT_MAX;
+            }
+            return timeout+1;
+        }
+    }
 }
