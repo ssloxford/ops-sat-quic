@@ -8,7 +8,7 @@
 
 #include <netdb.h>
 
-typedef struct _inflight_data {
+typedef struct _data_node {
     uint8_t* payload;
     ssize_t payloadlen;
 
@@ -17,20 +17,23 @@ typedef struct _inflight_data {
     // Total length of data sent before this one
     uint64_t offset;
 
-    struct _inflight_data *next;
-} inflight_data;
+    struct _data_node *next;
+} data_node;
 
-int prepare_packet(ngtcp2_conn *conn, uint64_t stream_id, uint8_t* buf, size_t buflen, size_t *pktlen, ngtcp2_ssize *wdatalen, struct iovec *iov, int fin);
+ssize_t prepare_packet(ngtcp2_conn *conn, uint64_t stream_id, uint8_t* buf, size_t buflen, ngtcp2_ssize *wdatalen, struct iovec *iov, int fin);
 
-int prepare_nonstream_packet(ngtcp2_conn *conn, uint8_t *buf, size_t buflen, size_t *pktlen);
+ssize_t prepare_nonstream_packet(ngtcp2_conn *conn, uint8_t *buf, size_t buflen);
 
 int send_packet(int fd, uint8_t* pkt, size_t pktlen);
 
-int read_message(int fd, uint8_t *buf, size_t buflen, struct sockaddr *remote_addr, size_t remote_addrlen, size_t *bytes_read);
+ssize_t read_message(int fd, uint8_t *buf, size_t buflen, struct sockaddr *remote_addr, size_t remote_addrlen);
 
-int write_step(ngtcp2_conn *conn, int fd, uint64_t stream_id, int fin, const uint8_t *data, size_t datalen, inflight_data **inflight, uint64_t *sent_offset);
+int write_step(ngtcp2_conn *conn, int fd, int fin, const data_node *send_queue, size_t *stream_offset);
 
 int send_nonstream_packets(ngtcp2_conn *conn, int fd, uint8_t *buf, size_t buflen, int limit);
 
 int handle_timeout(ngtcp2_conn *conn, int fd);
+
+int enqueue_message(const uint8_t *payload, size_t payloadlen, uint64_t stream_id, uint64_t offset, data_node *queue_tail);
+
 #endif

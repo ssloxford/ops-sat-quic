@@ -156,7 +156,7 @@ int main(int argc, char **argv) {
         left_addr_set = 1;
     }
 
-    if (rv != 0) {
+    if (rv < 0) {
         fprintf(stderr, "Failed to process port %s\n", left_port);
         return rv;
     }
@@ -169,7 +169,7 @@ int main(int argc, char **argv) {
         right_addr_set = 1;
     }
 
-    if (rv != 0) {
+    if (rv < 0) {
         fprintf(stderr, "Failed to process port %s\n", right_port);
         return rv;
     }

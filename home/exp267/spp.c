@@ -154,7 +154,7 @@ int fragment_data(SPP **spp, const uint8_t *data, size_t datalen, int *packets_m
         // TODO - Figure out if this should be TC or TM, or if it doesn't matter
         rv = construct_spp((*spp) + i, data + data_written, data_this_packet, user_data, telecommand, seq_flag, spp_pkt_count + i, udp_pkt_num, packets_needed, i);
 
-        if (rv != 0) {
+        if (rv < 0) {
             return rv;
         }
 

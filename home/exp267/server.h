@@ -18,7 +18,10 @@ typedef struct _server {
     int connected;
     uint64_t stream_id;
 
-    inflight_data *inflight_head;
+    // A linked list of all data queued to be sent or inflight (sent but not acknowledged)
+    // Inflight queue: (inflight_head, inflight_tail]
+    // Send queue: (inflight_tail, send_tail]
+    data_node *inflight_head, *inflight_tail, *send_tail;
     uint64_t sent_offset;
 
     ngtcp2_sockaddr_union localsock;

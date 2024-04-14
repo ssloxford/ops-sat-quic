@@ -14,13 +14,13 @@
 #include "utils.h"
 #include "errors.h"
 
-int prepare_packet(ngtcp2_conn *conn, uint64_t stream_id, uint8_t* buf, size_t buflen, size_t *pktlen, ngtcp2_ssize *wdatalen, struct iovec *iov, int fin) {
+ssize_t prepare_packet(ngtcp2_conn *conn, uint64_t stream_id, uint8_t* buf, size_t buflen, ngtcp2_ssize *wdatalen, struct iovec *iov, int fin) {
     // Write stream prepares the message to be sent into buf and returns size of the message
     ngtcp2_tstamp ts = timestamp();
     ngtcp2_pkt_info pi;
     ngtcp2_path_storage ps;
 
-    int rv;
+    ssize_t bytes_written;
 
     ngtcp2_path_storage_zero(&ps);
 
@@ -31,27 +31,22 @@ int prepare_packet(ngtcp2_conn *conn, uint64_t stream_id, uint8_t* buf, size_t b
     }
 
     // Need to cast *iov to (ngtcp2_vec*). Apparently safe: https://nghttp2.org/ngtcp2/types.html#c.ngtcp2_vec
-    rv = ngtcp2_conn_writev_stream(conn, &ps.path, &pi, buf, buflen, wdatalen, flag, stream_id, (ngtcp2_vec*) iov, 1, ts);
-    if (rv < 0) {
-        fprintf(stderr, "Trying to write to stream failed: %s\n", ngtcp2_strerror(rv));
-        return rv;
+    bytes_written = ngtcp2_conn_writev_stream(conn, &ps.path, &pi, buf, buflen, wdatalen, flag, stream_id, (ngtcp2_vec*) iov, 1, ts);
+    if (bytes_written < 0) {
+        fprintf(stderr, "Trying to write to stream failed: %s\n", ngtcp2_strerror(bytes_written));
+        return bytes_written;
     }
 
-    if (rv == 0) {
+    if (bytes_written == 0) {
         // fprintf(stderr, "Warning: Buffer to prepare packet into too small or packet is congestion limited\n");
         return ERROR_NO_NEW_MESSAGE;
     }
-
-    if (pktlen != NULL) {
-        // Update pktlen with the length of the produced packet
-        *pktlen = rv;
-    }
     
-    return 0;
+    return bytes_written;
 }
 
-int prepare_nonstream_packet(ngtcp2_conn *conn, uint8_t *buf, size_t buflen, size_t *pktlen) {
-    return prepare_packet(conn, -1, buf, buflen, pktlen, NULL, NULL, 0);
+ssize_t prepare_nonstream_packet(ngtcp2_conn *conn, uint8_t *buf, size_t buflen) {
+    return prepare_packet(conn, -1, buf, buflen, NULL, NULL, 0);
 }
 
 int send_packet(int fd, uint8_t* pkt, size_t pktlen) {
@@ -79,13 +74,13 @@ int send_packet(int fd, uint8_t* pkt, size_t pktlen) {
         return rv;
     }
 
-    return 0;
+    return rv;
 }
 
-int read_message(int fd, uint8_t *buf, size_t buflen, struct sockaddr *remote_addr, size_t remote_addrlen, size_t *bytes_read) {    
+ssize_t read_message(int fd, uint8_t *buf, size_t buflen, struct sockaddr *remote_addr, size_t remote_addrlen) {    
     struct msghdr msg;
 
-    int rv;
+    ssize_t bytes_read;
 
     struct iovec iov;
 
@@ -103,22 +98,20 @@ int read_message(int fd, uint8_t *buf, size_t buflen, struct sockaddr *remote_ad
     msg.msg_iov = &iov;
     msg.msg_iovlen = 1;
     
-    rv = recvmsg(fd, &msg, MSG_DONTWAIT);
+    bytes_read = recvmsg(fd, &msg, MSG_DONTWAIT);
 
-    if (rv == -1) {
+    if (bytes_read == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             return ERROR_NO_NEW_MESSAGE;
         }
         fprintf(stderr, "recvmsg: %s\n", strerror(errno));
-        return rv;
+        return bytes_read;
     }
 
-    *bytes_read = rv;
-
-    return 0;
+    return bytes_read;
 }
 
-int write_step(ngtcp2_conn *conn, int fd, uint64_t stream_id, int fin, const uint8_t *data, size_t datalen, inflight_data **inflight, uint64_t *sent_offset) {
+int write_step(ngtcp2_conn *conn, int fd, int fin, const data_node *send_queue, size_t *stream_offset) {
     // Data and datalen is the data to be written
     // Buf and bufsize is a general use memory allocation (eg. to pass packets to subroutines)
     size_t pktlen;
@@ -126,65 +119,41 @@ int write_step(ngtcp2_conn *conn, int fd, uint64_t stream_id, int fin, const uin
 
     uint8_t buf[BUF_SIZE];
 
-    int rv;
+    memset(buf, 0, sizeof(buf));
 
-    if (stream_id != -1) {
-        // There's an open stream
-        uint8_t *pkt_data = malloc(datalen);
+    ssize_t rv;
+
+    data_node *pkt_to_send = send_queue->next;
+
+    if (pkt_to_send != NULL) {
+        // There's something in the send queue
         ngtcp2_ssize stream_framelen;
 
-
-        if (pkt_data == NULL) {
-            fprintf(stderr, "Warning: Failed to allocate buffer memory of length %ld to write packet\n", datalen);
-            return ERROR_OUT_OF_MEMORY;
-        }
-
-        // Copy the provided data into malloced buffer to allow storage in the ack tracking
-        memcpy(pkt_data, data, datalen);
-
-        iov.iov_base = pkt_data;
-        iov.iov_len = datalen;
+        iov.iov_base = pkt_to_send->payload;
+        iov.iov_len = pkt_to_send->payloadlen;
 
         // A stream is open, so we will write to the stream
         // Will also add "housekeeping" frames to the packet
-        rv = prepare_packet(conn, stream_id, buf, sizeof(buf), &pktlen, &stream_framelen, &iov, fin);
+        pktlen = prepare_packet(conn, pkt_to_send->stream_id, buf, sizeof(buf), &stream_framelen, &iov, fin);
 
-        if (rv != 0) {
-            free(pkt_data);
-            return rv;
+        if (pktlen < 0) {
+            return pktlen;
         }
 
         rv = send_packet(fd, buf, pktlen);
 
-        if (rv != 0) {
-            free(pkt_data);
+        if (rv < 0) {
             return rv;
         }
 
-        // Allocate a new inflight data node
-        *inflight = malloc(sizeof(inflight_data));
-
-        if (*inflight == NULL) {
-            // If out of memory, make sure all allocated memory is freed
-            // Will mean that if this packet is not ACKed the data is lost
-            fprintf(stderr, "Warning: Failed to allocate new node to track inflight data\n");
-            free(pkt_data);
-            return ERROR_OUT_OF_MEMORY;
-        }
-
-        (*inflight)->payload = pkt_data;
-        (*inflight)->payloadlen = stream_framelen;
-        (*inflight)->stream_id = stream_id;
-        (*inflight)->offset = *sent_offset;
-
-        *sent_offset = *sent_offset + stream_framelen;
+        *stream_offset = *stream_offset + stream_framelen;
     }
 
     // If there are any "housekeeping" frames that didn't fit into the above packet, send them now
     // Will likely only send packets if the above code wasn't run. Housekeeping frames are typically small
     rv = send_nonstream_packets(conn, fd, buf, sizeof(buf), -1);
 
-    if (rv != 0) {
+    if (rv < 0) {
         return rv;
     }
 
@@ -198,19 +167,19 @@ int send_nonstream_packets(ngtcp2_conn *conn, int fd, uint8_t *buf, size_t bufle
 
     // Limit less than 0 is treated as no limit
     for (int i = 0; limit < 0 || i < limit; i++) {
-        rv = prepare_nonstream_packet(conn, buf, buflen, &pktlen);
-        if (rv == ERROR_NO_NEW_MESSAGE) {
+        pktlen = prepare_nonstream_packet(conn, buf, buflen);
+        if (pktlen == ERROR_NO_NEW_MESSAGE) {
             // No more "housekeeping" packets to send. Return 
             return 0;
         }
 
-        if (rv != 0) {
-            return rv;
+        if (pktlen < 0) {
+            return pktlen;
         }
 
         rv = send_packet(fd, buf, pktlen);
 
-        if (rv != 0) {
+        if (rv < 0) {
             return rv;
         }
     }
@@ -234,9 +203,44 @@ int handle_timeout(ngtcp2_conn *conn, int fd) {
     // Send a single non-stream packet
     rv = send_nonstream_packets(conn, fd, buf, sizeof(buf), 1);
 
-    if (rv != 0) {
+    if (rv < 0) {
         return rv;
     }
+
+    return 0;
+}
+
+int enqueue_message(const uint8_t *payload, size_t payloadlen, uint64_t stream_id, uint64_t offset, data_node *queue_tail) {
+    uint8_t *pkt_data = malloc(payloadlen);
+
+    if (pkt_data == NULL) {
+        return ERROR_OUT_OF_MEMORY;
+    }
+
+    // Create a new data node and 
+    data_node *queue_node = malloc(sizeof(data_node));
+
+    if (queue_node == NULL) {
+        free(pkt_data);
+        return ERROR_OUT_OF_MEMORY;
+    }
+
+    // Load the provided data into the allocated node buffer
+    memcpy(pkt_data, payload, payloadlen);
+
+    queue_node->payload = pkt_data;
+    queue_node->payloadlen = payloadlen;
+
+    queue_node->stream_id = stream_id;
+
+    queue_node->offset = offset;
+
+    // Join the values after queue_tail onto the created node
+    // For a true tail node, this will be NULL
+    queue_node->next = queue_tail->next;
+
+    // Add the new node after *queue_tail
+    queue_tail->next = queue_node;
 
     return 0;
 }

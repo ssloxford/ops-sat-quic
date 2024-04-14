@@ -1,5 +1,5 @@
 #ifndef INCLUDE_H
-define INCLUDE_H
+#define INCLUDE_H
 
 #include <ngtcp2/ngtcp2.h>
 

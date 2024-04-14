@@ -76,7 +76,7 @@ int resolve_and_process(int *save_fd, const char *target_host, const char* targe
     int rv, fd;
 
     rv = getaddrinfo(target_host, target_port, hints, &result);
-    if (rv != 0) {
+    if (rv < 0) {
         fprintf(stderr, "Failed to get address info for requested endpoint: %s\n", gai_strerror(rv));
         return ERROR_HOST_LOOKUP;
     }

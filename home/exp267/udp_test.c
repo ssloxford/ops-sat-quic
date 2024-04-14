@@ -22,7 +22,7 @@ int main(int argc, char** argv) {
     // Accept target port in cmd and connect to it
     rv = connect_udp_socket(&fd, "localhost", argv[1], (struct sockaddr*) &remoteaddr, &remoteaddrlen);
 
-    if (rv != 0) {
+    if (rv < 0) {
         return rv;
     }
 

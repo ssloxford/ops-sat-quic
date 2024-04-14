@@ -59,14 +59,14 @@ static int bind_and_accept_tcp_socket(int *fd, char *server_port, struct sockadd
 
     rv = resolve_and_process(&listen_fd, INADDR_ANY, server_port, &hints, 1, NULL, NULL, NULL, NULL);
 
-    if (rv != 0) {
+    if (rv < 0) {
         return rv;
     }
 
     // Marks the TCP socket as accepting connections. Connection queue of length 1
     rv = listen(listen_fd, 1);
 
-    if (rv != 0) {
+    if (rv < 0) {
         fprintf(stderr, "listen: %s\n", strerror(errno));
         return rv;
     }
@@ -241,14 +241,14 @@ static int handle_udp_packet(int tcp_fd, uint8_t *buf, size_t buflen, size_t pkt
     // Updates packets to the head of the array containing the fragmented data
     rv = fragment_data(&packets, buf, pktlen, &packets_made, spp_count, udp_count);
 
-    if (rv != 0) {
+    if (rv < 0) {
         return rv;
     }
 
     for (int i = 0; i < packets_made; i++) {
         rv = serialise_spp(buf, buflen, &packets[i]);
 
-        if (rv != 0) {
+        if (rv < 0) {
             return rv;
         }
 
@@ -265,7 +265,7 @@ static int handle_udp_packet(int tcp_fd, uint8_t *buf, size_t buflen, size_t pkt
 
     rv = free_spp_array(packets, packets_made);
 
-    if (rv != 0) {
+    if (rv < 0) {
         return rv;
     }
 
@@ -353,7 +353,7 @@ int main(int argc, char **argv) {
         rv = bind_udp_socket(&udp_fd, udp_target_port);
     }
 
-    if (rv != 0) {
+    if (rv < 0) {
         fprintf(stderr, "Error when establishing UDP connection\n");
         return rv;
     }
@@ -369,7 +369,7 @@ int main(int argc, char **argv) {
         rv = bind_and_accept_tcp_socket(&tcp_fd, TCP_PORT, (struct sockaddr*) &tcp_remote, &tcp_remotelen);
     }
     
-    if (rv != 0) {
+    if (rv < 0) {
         fprintf(stderr, "Error when establishing TCP connection\n");
         return rv;
     }

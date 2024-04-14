@@ -17,22 +17,29 @@ static int acked_stream_data_offset_cb(ngtcp2_conn *conn, int64_t stream_id, uin
     client *c = user_data;
 
     // Start on the dummy header
-    inflight_data *prev_ptr = c->inflight_head;
+    data_node *prev_ptr = c->inflight_head;
     
-    // Must use prev_ptr to update ptr since ptr may have been deallocated
-    // prev_ptr tracks 1 behind ptr is an invariant
-    for (inflight_data *ptr = prev_ptr->next; ptr != NULL; ptr = prev_ptr->next) {
+    // Must update using prev_ptr->next as ptr may have been deallocated
+    for (data_node *ptr = prev_ptr->next; prev_ptr != c->inflight_tail; ptr = prev_ptr->next) {
         if (ptr->stream_id == stream_id && ptr->offset >= offset && ptr->offset < (offset + datalen)) {
             // This frame has been acked in this call. We can deallocate it
-
-            // Skip the prev_ptr next over the node being deallocated
+            // Update the pointers
             prev_ptr->next = ptr->next;
 
-            // Remove this node
             free(ptr->payload);
             free(ptr);
+
+            // If deleting the last element of the list, make the tail pointer accurate
+            if (ptr == c->inflight_tail) {
+                // Deleting the last element of the queue. Must update the pointers to track
+                c->inflight_tail = prev_ptr;
+                if (c->send_tail == ptr) {
+                    // We're also deleting the send_tail, meaning the send list must have been empty. Therefore, we must update the tail pointer to track the send head
+                    c->send_tail = c->inflight_tail;
+                }
+            }
         } else {
-            // Not ackowledging this node, so track prev_ptr forward
+            // Keep tracking the previous pointer
             prev_ptr = ptr;
         }
     }
@@ -74,7 +81,7 @@ static int client_wolfssl_init(client *c) {
     };
 
     rv = ngtcp2_crypto_wolfssl_configure_client_context(c->ctx);
-    if (rv != 0) {
+    if (rv < 0) {
         fprintf(stderr, "Failed to configure wolf context: %s\n", ngtcp2_strerror(rv));
         return ERROR_WOLFSSL_SETUP;
     }
@@ -111,7 +118,7 @@ static int client_resolve_and_connect(client *c, const char *target_host, const 
     // and updates variables fd, and local and remote sockaddr and socklen in client
     rv = resolve_and_process(&c->fd, target_host, target_port, &hints, 0, (ngtcp2_sockaddr*) &c->localsock, &c->locallen, (ngtcp2_sockaddr*) &c->remotesock, &c->remotelen);
 
-    if (rv != 0) {
+    if (rv < 0) {
         return rv;
     }
 
@@ -204,7 +211,7 @@ static int client_ngtcp2_init(client *c, char* server_ip, char *server_port) {
 
     // Resolve provided hostname and port, and create a socket connected to it
     rv = client_resolve_and_connect(c, server_ip, server_port);
-    if (rv != 0) {
+    if (rv < 0) {
         fprintf(stderr, "Failed to resolve and connect to target socket: %d\n", rv);
         return rv;
     }
@@ -223,7 +230,7 @@ static int client_ngtcp2_init(client *c, char* server_ip, char *server_port) {
 
     rv = ngtcp2_conn_client_new(&c->conn, &dcid, &scid, &path, NGTCP2_PROTO_VER_V1, &callbacks, &settings, &params, NULL, c);
 
-    if (rv != 0) {
+    if (rv < 0) {
         fprintf(stderr, "Failed to create new client connection: %s\n", ngtcp2_strerror(rv));
         return rv;
     }
@@ -247,8 +254,8 @@ static int client_init(client *c, char* server_ip, char *server_port) {
     c->stream_id = -1;
 
     // inflight_head is a dummy node
-    c->inflight_head = malloc(sizeof(inflight_data));
-    c->inflight_head->next = NULL;
+    c->send_tail = c->inflight_tail = c->inflight_head = malloc(sizeof(data_node));
+    c->send_tail->next = NULL;
     c->sent_offset = 0;
 
     c->locallen = sizeof(c->localsock);
@@ -258,12 +265,12 @@ static int client_init(client *c, char* server_ip, char *server_port) {
 
     // Create the wolfSSL context and ssl instance and load it into the client struct
     rv = client_wolfssl_init(c);
-    if (rv != 0) {
+    if (rv < 0) {
         return rv;
     }
 
     rv = client_ngtcp2_init(c, server_ip, server_port);
-    if (rv != 0) {
+    if (rv < 0) {
         fprintf(stderr, "Failed to initialise ngtcp2 connection: %s\n", ngtcp2_strerror(rv));
         return rv;
     }
@@ -271,22 +278,20 @@ static int client_init(client *c, char* server_ip, char *server_port) {
     return 0;
 }
 
-static int client_write_step(client *c, uint8_t *data, size_t datalen) {
-    inflight_data *inflight;
+static int client_write_step(client *c) {
     int rv;
 
     // TODO - Implement deciding when fin
-    rv = write_step(c->conn, c->fd, c->stream_id, 0, data, datalen, &inflight, &c->sent_offset);
+    rv = write_step(c->conn, c->fd, 0, c->inflight_tail, &c->sent_offset);
 
-    if (rv != 0) {
+    if (rv < 0) {
         return rv;
     }
 
     // Stream data has been written. Update the in flight list
-    if (c->stream_id != -1) {
-        // Insert after the dummy header node
-        inflight->next = c->inflight_head->next;
-        c->inflight_head->next = inflight;
+    if (c->inflight_tail != c->send_tail) {
+        // Send queue is non-empty, so the head was sent
+        c->inflight_tail = c->inflight_tail->next;
     }
 
     return 0;
@@ -303,14 +308,14 @@ static int client_read_step(client *c) {
     size_t pktlen;
 
     for (;;) {
-        rv = read_message(c->fd, buf, sizeof(buf), (ngtcp2_sockaddr*) &remote_addr, sizeof(remote_addr), &pktlen);
+        pktlen = read_message(c->fd, buf, sizeof(buf), (ngtcp2_sockaddr*) &remote_addr, sizeof(remote_addr));
 
-        if (rv == ERROR_NO_NEW_MESSAGE) {
+        if (pktlen == ERROR_NO_NEW_MESSAGE) {
             return 0;
         }
 
-        if (rv != 0) {
-            return rv;
+        if (pktlen < 0) {
+            return pktlen;
         }
 
         // TODO - pktlen will be 0 when client has closed connection?
@@ -319,7 +324,7 @@ static int client_read_step(client *c) {
         }
 
         rv = ngtcp2_pkt_decode_version_cid(&version, buf, pktlen, NGTCP2_MAX_CIDLEN);
-        if (rv != 0) {
+        if (rv < 0) {
             fprintf(stderr, "Failed to decode version cid: %s\n", ngtcp2_strerror(rv));
             return rv;
         }
@@ -341,7 +346,7 @@ static int client_read_step(client *c) {
         // General actions on the packet (including processing incoming handshake on conn if incomplete)
         rv = ngtcp2_conn_read_pkt(c->conn, &path, NULL, buf, pktlen, timestamp());
 
-        if (rv != 0) {
+        if (rv < 0) {
             fprintf(stderr, "Failed to read packet: %s\n", ngtcp2_strerror(rv));
             return rv;
         }
@@ -350,7 +355,7 @@ static int client_read_step(client *c) {
     // Send ACK frames
     rv = send_nonstream_packets(c->conn, c->fd, buf, sizeof(buf), -1);
 
-    if (rv != 0) {
+    if (rv < 0) {
         return rv;
     }
 
@@ -382,7 +387,7 @@ static int client_close_connection(client *c) {
 
     rv = send_packet(c->fd, buf, pktlen);
 
-    if (rv != 0) {
+    if (rv < 0) {
         return rv;
     }
 }
@@ -453,7 +458,7 @@ int main(int argc, char **argv){
     rv = client_init(&c, server_ip, server_port);
 
     // If client init failed, propagate error
-    if (rv != 0) {
+    if (rv < 0) {
         return rv;
     }
 
@@ -466,9 +471,9 @@ int main(int argc, char **argv){
     while (1) {
         if (c.stream_id == -1) {
             // Send handshake data
-            rv = client_write_step(&c, NULL, 0);
+            rv = client_write_step(&c);
 
-            if (rv != 0) {
+            if (rv < 0) {
                 return rv;
             }
 
@@ -489,7 +494,7 @@ int main(int argc, char **argv){
 
             rv = client_read_step(&c);
 
-            if (rv != 0) {
+            if (rv < 0) {
                 return rv;
             }
         } else {
@@ -511,11 +516,13 @@ int main(int argc, char **argv){
             if (polls[0].revents & POLLIN) {
                 rv = client_read_step(&c);
 
-                if (rv != 0) {
+                if (rv < 0) {
                     return rv;
                 }
             } else if (polls[1].revents & POLLIN) {
-                rv = read(input_fd, payload, sizeof(payload));
+                // Recieved input data to be transmitted
+                // By shortening the payload buffer by 1, there will be space to null terminate if needed
+                rv = read(input_fd, payload, sizeof(payload)-1);
 
                 if (rv == -1) {
                     fprintf(stdout, "Failed to read from input: %s\n", strerror(errno));
@@ -532,16 +539,24 @@ int main(int argc, char **argv){
 
                 if (input_fd == STDIN_FILENO) {
                     // Null terminate the string
-                    // TODO - Could cause buffer overstep if rv = buflen
-                    payload[rv-1] = '\0';
+                    payload[rv] = '\0';
                     rv++;
                 }
 
-                rv = client_write_step(&c, payload, rv);
+                rv = enqueue_message(payload, rv, c.stream_id, c.sent_offset, c.send_tail);
 
-                if (rv != 0) {
+                if (rv < 0) {
                     return rv;
                 }
+
+                // Update the tail pointer to the newly enqueued message
+                c.send_tail = c.send_tail->next;
+            }
+
+            rv = client_write_step(&c);
+
+            if (rv < 0) {
+                return rv;
             }
         }
     }

@@ -20,10 +20,10 @@ static int acked_stream_data_offset_cb(ngtcp2_conn *conn, int64_t stream_id, uin
     server *s = user_data;
 
     // Start on the dummy header
-    inflight_data *prev_ptr = s->inflight_head;
+    data_node *prev_ptr = s->inflight_head;
     
     // Must update using prev_ptr->next as ptr may have been deallocated
-    for (inflight_data *ptr = prev_ptr->next; ptr != NULL; ptr = prev_ptr->next) {
+    for (data_node *ptr = prev_ptr->next; prev_ptr != s->inflight_tail; ptr = prev_ptr->next) {
         if (ptr->stream_id == stream_id && ptr->offset >= offset && ptr->offset < (offset + datalen)) {
             // This frame has been acked in this call. We can deallocate it
             // Update the pointers
@@ -31,6 +31,16 @@ static int acked_stream_data_offset_cb(ngtcp2_conn *conn, int64_t stream_id, uin
 
             free(ptr->payload);
             free(ptr);
+
+            // If deleting the last element of the list, make the tail pointer accurate
+            if (ptr == s->inflight_tail) {
+                // Deleting the last element of the queue. Must update the pointers to track
+                s->inflight_tail = prev_ptr;
+                if (s->send_tail == ptr) {
+                    // We're also deleting the send_tail, meaning the send list must have been empty. Therefore, we must update the tail pointer to track the send head
+                    s->send_tail = s->inflight_tail;
+                }
+            }
         } else {
             // Keep tracking the previous pointer
             prev_ptr = ptr;
@@ -45,6 +55,7 @@ static int extend_max_local_streams_uni_cb(ngtcp2_conn *conn, uint64_t max_strea
 
     server *s = user_data;
 
+    // If not replying data, no need to open a new stream. Saves a frame in the next packet
     if (!s->reply) {
         return 0;
     }
@@ -52,7 +63,7 @@ static int extend_max_local_streams_uni_cb(ngtcp2_conn *conn, uint64_t max_strea
     int rv = ngtcp2_conn_open_uni_stream(conn, &stream_id, NULL);
     if (rv < 0) {
         fprintf(stderr, "Failed to open new uni stream: %s\n", ngtcp2_strerror(rv));
-        return ERROR_NEW_STREAM;
+        return NGTCP2_ERR_CALLBACK_FAILURE;
     }
 
     s->stream_id = stream_id;
@@ -63,10 +74,20 @@ static int extend_max_local_streams_uni_cb(ngtcp2_conn *conn, uint64_t max_strea
 static int recv_stream_data_cb(ngtcp2_conn *conn, uint32_t flags, int64_t stream_id, uint64_t offset, const uint8_t *data, size_t datalen, void *user_data, void *stream_user_data) {
     fprintf(stdout, "Client sent: %*s\n", (int) datalen, data);
 
-    server *s = user_data;
+    int rv;
 
-    memcpy(s->reply_data, data, datalen);
-    s->reply_data_len = datalen;
+    server *s = user_data;
+    
+    if (s->reply) {
+        rv = enqueue_message(data, datalen, s->stream_id, s->sent_offset, s->send_tail);
+      
+        if (rv < 0) {
+            return NGTCP2_ERR_CALLBACK_FAILURE;
+        }
+
+        // Update the tail pointer to the newly added value
+        s->send_tail = s->send_tail->next;
+    }
 
     return 0;
 }
@@ -106,7 +127,7 @@ static int server_wolfssl_init(server *s) {
     }
 
     rv = ngtcp2_crypto_wolfssl_configure_server_context(s->ctx);
-    if (rv != 0) {
+    if (rv < 0) {
         fprintf(stderr, "Failed to configure wolf context: %s\n", ngtcp2_strerror(rv));
         return ERROR_WOLFSSL_SETUP;
     }
@@ -193,7 +214,7 @@ static int server_resolve_and_bind(server *s, const char *server_port) {
     // and updates the local sockaddr and socklen in server
     rv = resolve_and_process(&s->fd, INADDR_ANY, server_port, &hints, 1, (ngtcp2_sockaddr*) &s->localsock, &s->locallen, NULL, NULL);
 
-    if (rv != 0) {
+    if (rv < 0) {
         return rv;
     }
 
@@ -216,9 +237,9 @@ static int server_init(server *s, char *server_port) {
     s->connected = 0;
     s->stream_id = -1;
 
-    // inflight_head is a dummy node
-    s->inflight_head = malloc(sizeof(inflight_data));
-    s->inflight_head->next = NULL;
+    // inflight_head is a dummy node. Both lists start empty
+    s->send_tail = s->inflight_tail = s->inflight_head = malloc(sizeof(data_node));
+    s->send_tail->next = NULL;
     s->sent_offset = 0;
 
     s->locallen = sizeof(s->localsock);
@@ -226,12 +247,12 @@ static int server_init(server *s, char *server_port) {
     rand_init();
 
     rv = server_wolfssl_init(s);
-    if (rv != 0) {
+    if (rv < 0) {
         return rv;
     }
 
     rv = server_resolve_and_bind(s, server_port);
-    if (rv != 0) {
+    if (rv < 0) {
         return rv;
     }
 
@@ -263,7 +284,7 @@ static int server_accept_connection(server *s, uint8_t *buf, size_t buflen, ngtc
     // Determine if the received first message is acceptable
     // If it is, write the data into the header structure
     rv = ngtcp2_accept(&header, buf, buflen);
-    if (rv != 0) {
+    if (rv < 0) {
         fprintf(stderr, "First packet could not be parsed or was unacceptable: %s\n", ngtcp2_strerror(rv));
         return rv;
     }
@@ -298,14 +319,14 @@ static int server_accept_connection(server *s, uint8_t *buf, size_t buflen, ngtc
 
     ngtcp2_conn_set_tls_native_handle(s->conn, s->ssl);
 
-    if (rv != 0) {
+    if (rv < 0) {
         fprintf(stderr, "Failed to create connection instance from incomming request\n");
         return rv;
     }
 
     rv = connect(s->fd, path->remote.addr, path->remote.addrlen);
 
-    if (rv != 0) {
+    if (rv < 0) {
         fprintf(stderr, "Failed to add connection to fd\n");
         return rv; // TODO - Make a new error code
     }
@@ -325,14 +346,14 @@ static int server_read_step(server *s) {
     size_t pktlen;
 
     for (;;) {
-        rv = read_message(s->fd, buf, sizeof(buf), &remote_addr, sizeof(remote_addr), &pktlen);
+        pktlen = read_message(s->fd, buf, sizeof(buf), &remote_addr, sizeof(remote_addr));
 
-        if (rv == ERROR_NO_NEW_MESSAGE) {
+        if (pktlen == ERROR_NO_NEW_MESSAGE) {
             return 0;
         }
 
-        if (rv != 0) {
-            return rv;
+        if (pktlen < 0) {
+            return pktlen;
         }
 
         if (pktlen == 0) {
@@ -340,7 +361,7 @@ static int server_read_step(server *s) {
         }
 
         rv = ngtcp2_pkt_decode_version_cid(&version, buf, pktlen, NGTCP2_MAX_CIDLEN);
-        if (rv != 0) {
+        if (rv < 0) {
             fprintf(stderr, "Could not decode packet version: %s\n", ngtcp2_strerror(rv));
             return rv;
         }
@@ -359,10 +380,10 @@ static int server_read_step(server *s) {
             }
         };
 
-        // If we're not currently connected, try accepting the connection. If it works, procede with actioning the packet
+        // If we're not currently connected, try accepting the connection. If it works, action the packet
         if (!s->connected) {
             rv = server_accept_connection(s, buf, sizeof(buf), &path);
-            if (rv != 0) {
+            if (rv < 0) {
                 return rv;
             }
         }
@@ -370,7 +391,7 @@ static int server_read_step(server *s) {
         // General actions on the packet (including processing incoming handshake on conn if incomplete)
         rv = ngtcp2_conn_read_pkt(s->conn, &path, NULL, buf, pktlen, timestamp());
 
-        if (rv != 0) {
+        if (rv < 0) {
             if (rv == NGTCP2_ERR_DRAINING) {
                 // Client has closed it's connection
                 server_close_connection(s);
@@ -385,27 +406,28 @@ static int server_read_step(server *s) {
     // Send ACK packets
     rv = send_nonstream_packets(s->conn, s->fd, buf, sizeof(buf), -1);
 
-    if (rv != 0) {
+    if (rv < 0) {
         return rv;
     }
 
     return 0;
 }
 
-static int server_write_step(server *s, uint8_t *data, size_t datalen) {
-    inflight_data *inflight;
+static int server_write_step(server *s) {
     int rv;
+    // inflight_tail is also send_head
 
     // TODO - Implement taking and providing fin bit
-    rv = write_step(s->conn, s->fd, s->stream_id, 0, data, datalen, &inflight, &s->sent_offset);
+    rv = write_step(s->conn, s->fd, 0, s->inflight_tail, &s->sent_offset);
 
-    if (rv != 0) {
+    if (rv < 0) {
         return rv;
     }
 
-    if (s->stream_id != -1) {
-        inflight->next = s->inflight_head->next;
-        s->inflight_head->next = inflight;
+    if (s->inflight_tail != s->send_tail) {
+        // Send queue is non-empty, so the head was sent
+        // Steps the head of the send queue onto the tail of the inflight queue
+        s->inflight_tail = s->inflight_tail->next;
     }
 
     return 0;
@@ -475,7 +497,7 @@ int main(int argc, char **argv) {
 
     // Allocates the fd to listen for connections, and sets up the wolfSSL backend
     rv = server_init(&s, server_port);
-    if (rv != 0) {
+    if (rv < 0) {
         return rv;
     }
 
@@ -506,7 +528,7 @@ int main(int argc, char **argv) {
         }
 
         rv = server_read_step(&s);
-        if (rv != 0 && rv != ERROR_NO_NEW_MESSAGE) {
+        if (rv < 0 && rv != ERROR_NO_NEW_MESSAGE) {
             if (rv == ERROR_DRAINING_STATE) {
                 // The connection is being closed. Server must process remaining packets (eg. ACK)
                 continue;
@@ -515,8 +537,8 @@ int main(int argc, char **argv) {
         }
 
         // TODO - Deal with this call for when not sending data
-        rv = server_write_step(&s, s.reply_data, s.reply_data_len);
-        if (rv != 0) {
+        rv = server_write_step(&s);
+        if (rv < 0) {
             return rv;
         }
     }
