@@ -490,11 +490,6 @@ int main(int argc, char **argv) {
         }
     }
 
-    // TODO - Macro the message size
-    uint8_t message[160];
-    s.reply_data = message;
-    s.reply_data_len = -1;
-
     // Allocates the fd to listen for connections, and sets up the wolfSSL backend
     rv = server_init(&s, server_port);
     if (rv < 0) {

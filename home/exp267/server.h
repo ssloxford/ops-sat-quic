@@ -31,8 +31,6 @@ typedef struct _server {
     WOLFSSL_CTX* ctx;
 
     int reply;
-    uint8_t *reply_data;
-    size_t reply_data_len;
 
     int debug;
 } server;
