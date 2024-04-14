@@ -1,3 +1,6 @@
+#ifndef CLIENT_H
+#define CLIENT_H
+
 #include <wolfssl/ssl.h>
 #include <ngtcp2/ngtcp2.h>
 
@@ -28,3 +31,5 @@ typedef struct _client {
     // Flag to determine if debugging code is on
     int debug;
 } client;
+
+#endif

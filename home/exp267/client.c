@@ -10,8 +10,7 @@
 #include "client.h"
 #include "utils.h"
 #include "errors.h"
-// connection.h included by client.h
-// #include "connection.h"
+#include "connection.h"
 
 static int acked_stream_data_offset_cb(ngtcp2_conn *conn, int64_t stream_id, uint64_t offset, uint64_t datalen, void *user_data, void *stream_data) {
     // The server has acknowledged all data in the range [offset, offset+datalen)    

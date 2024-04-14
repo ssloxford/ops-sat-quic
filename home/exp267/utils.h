@@ -1,3 +1,6 @@
+#ifndef INCLUDE_H
+define INCLUDE_H
+
 #include <ngtcp2/ngtcp2.h>
 
 #include <netdb.h>
@@ -24,3 +27,5 @@ int bind_udp_socket(int *fd, char *server_port);
 int connect_udp_socket(int *fd, char *server_ip, char *server_port, struct sockaddr *remoteaddr, socklen_t *remoteaddrlen);
 
 int get_timeout(ngtcp2_conn *conn);
+
+#endif

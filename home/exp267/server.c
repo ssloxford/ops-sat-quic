@@ -13,8 +13,7 @@
 #include "server.h"
 #include "utils.h"
 #include "errors.h"
-// Connection.h included by server.h. Repeat inclusion caused issues with repeat definitions of inflight_data
-//#include "connection.h"
+#include "connection.h"
 
 static int acked_stream_data_offset_cb(ngtcp2_conn *conn, int64_t stream_id, uint64_t offset, uint64_t datalen, void *user_data, void *stream_data) {
     // The remote has acknowledged all data in the range [offset, offset+datalen)    

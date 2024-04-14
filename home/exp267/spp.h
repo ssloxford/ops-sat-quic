@@ -1,3 +1,6 @@
+#ifndef SPP_H
+#define SPP_H
+
 #include <stdint.h>
 #include <stddef.h>
 
@@ -103,3 +106,5 @@ int deserialise_spp(const uint8_t *buf, SPP *spp);
 int fragment_data(SPP **spp, const uint8_t *data, size_t datalen, int *packets_made, uint16_t spp_pkt_count, uint8_t udp_pkt_num);
 
 int free_spp_array(SPP *array, size_t arraylen);
+
+#endif

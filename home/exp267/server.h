@@ -1,3 +1,6 @@
+#ifndef SERVER_H
+#define SERVER_H
+
 #include <ngtcp2/ngtcp2.h>
 #include <ngtcp2/ngtcp2_crypto.h>
 
@@ -30,3 +33,5 @@ typedef struct _server {
 
     int debug;
 } server;
+
+#endif

@@ -1,3 +1,6 @@
+#ifndef CONNECTION_H
+#define CONNECTION_H
+
 #define SERVER_PORT "11111"
 #define DEFAULT_IP "localhost"
 
@@ -30,3 +33,4 @@ int write_step(ngtcp2_conn *conn, int fd, uint64_t stream_id, int fin, const uin
 int send_nonstream_packets(ngtcp2_conn *conn, int fd, uint8_t *buf, size_t buflen, int limit);
 
 int handle_timeout(ngtcp2_conn *conn, int fd);
+#endif

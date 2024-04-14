@@ -1,3 +1,6 @@
+#ifndef ERRORS_H
+#define ERRORS_H
+
 // TODO - Allocate negative values to these codes
 // TODO - Typedef an error code as int and update throughout
 
@@ -18,3 +21,5 @@
 
 #define ERROR_DRAINING_STATE -61
 #define ERROR_DROP_CONNECTION -62
+
+#endif
