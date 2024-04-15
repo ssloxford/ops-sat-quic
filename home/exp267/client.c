@@ -406,6 +406,7 @@ void print_helpstring() {
     printf("-i [ip]: Specifies IP to connect to. Default localhost\n");
     printf("-p [port]: Specifies port to connect to. Default 11111\n");
     printf("-f [file]: Specifies source of transmission data. Default stdin\n");
+    printf("-s [bytes]: Generate and send [bytes] random bytes. Negative number for infinite bytes. Cannot be used with -f\n");
     printf("-d: Enable debug printing\n");
 }
 
@@ -418,8 +419,10 @@ int main(int argc, char **argv){
     struct pollfd polls[2];
 
     int input_fd = STDIN_FILENO;
+    size_t remaining_rand_data;
 
     uint8_t payload[1024];
+    int payloadlen;
 
     char *server_ip = DEFAULT_IP;
     char *server_port = SERVER_PORT;
@@ -429,7 +432,7 @@ int main(int argc, char **argv){
 
     c.debug = 0;
 
-    while ((opt = getopt(argc, argv, "hdi:p:f:")) != -1) {
+    while ((opt = getopt(argc, argv, "hdi:p:f:s:")) != -1) {
         switch (opt) {
             case 'h':
                 print_helpstring();
@@ -448,6 +451,11 @@ int main(int argc, char **argv){
                 if (input_fd == -1) {
                     fprintf(stderr, "Failed to open file %s\n", optarg);
                 }
+                return 0;
+                break;
+            case 's':
+                input_fd = -1;
+                remaining_rand_data = atoi(optarg);
                 break;
             case '?':
                 printf("Unknown option -%c\n", optopt);
@@ -462,6 +470,8 @@ int main(int argc, char **argv){
         return rv;
     }
 
+    // Polling a negative fd is defined behaviour that will not ever return on that fd.
+    // If not using input_fd, we can safely leave that fd as -1 and it will not be accessed
     polls[0].fd = c.fd;
     polls[1].fd = input_fd;
 
@@ -522,14 +532,14 @@ int main(int argc, char **argv){
             } else if (polls[1].revents & POLLIN) {
                 // Recieved input data to be transmitted
                 // By shortening the payload buffer by 1, there will be space to null terminate if needed
-                rv = read(input_fd, payload, sizeof(payload)-1);
+                payloadlen = read(input_fd, payload, sizeof(payload)-1);
 
-                if (rv == -1) {
+                if (payloadlen == -1) {
                     fprintf(stdout, "Failed to read from input: %s\n", strerror(errno));
                     return -1;
                 }
 
-                if (rv == 0) {
+                if (payloadlen == 0) {
                     // End of file reached
                     close(input_fd);
                     client_close_connection(&c);
@@ -539,17 +549,39 @@ int main(int argc, char **argv){
 
                 if (input_fd == STDIN_FILENO) {
                     // Null terminate the string
-                    payload[rv] = '\0';
-                    rv++;
+                    payload[payloadlen] = '\0';
+                    payloadlen++;
                 }
 
-                rv = enqueue_message(payload, rv, c.stream_id, c.sent_offset, c.send_tail);
+                rv = enqueue_message(payload, payloadlen, c.stream_id, c.sent_offset, c.send_tail);
 
                 if (rv < 0) {
                     return rv;
                 }
 
                 // Update the tail pointer to the newly enqueued message
+                c.send_tail = c.send_tail->next;
+            }
+
+            if (input_fd == -1) {
+                // We're using generated test data rather than data read from a file descriptor
+                // Generate and add some more data to the send queue
+                payloadlen = remaining_rand_data;
+
+                if (remaining_rand_data > sizeof(payload)) {
+                    payloadlen = sizeof(payload);
+                }
+
+                rand_bytes(payload, payloadlen);
+
+                rv = enqueue_message(payload, payloadlen, c.stream_id, c.sent_offset, c.send_tail);
+
+                if (rv < 0) {
+                    return rv;
+                }
+
+                remaining_rand_data -= payloadlen;
+
                 c.send_tail = c.send_tail->next;
             }
 

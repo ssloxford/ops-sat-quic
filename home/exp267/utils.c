@@ -34,23 +34,33 @@ void rand_init() {
 }
 
 int rand_bytes(uint8_t* dest, size_t destlen) {
-    for (size_t i = 0; i < destlen; i++) {
-        dest[i] = rand(); // Will truncate down to a single byte
+    int bytes_this_loop;
+    int rand_num;
+
+    for (size_t i = 0; i < destlen; i += bytes_this_loop) {
+        // Bytes left to randomise in the array
+        bytes_this_loop = destlen - i;
+
+        rand_num = rand();
+
+        if (bytes_this_loop > sizeof(rand_num)) {
+            bytes_this_loop = sizeof(rand_num);
+        }
+
+        // Write the full int from the next byte to randomise
+        memcpy(&dest[i], &rand_num, bytes_this_loop); 
     }
 
     return 0;
 }
 
-// Callback not used for cryptoRNG so safe to delegate to stdlib rand()
+// Callback not used for crypto RNG so safe to delegate to stdlib rand() (not crypto secure)
 void rand_cb(uint8_t* dest, size_t destlen, const ngtcp2_rand_ctx* rand_ctx) {
     rand_bytes(dest, destlen);
 }
 
 int get_new_connection_id_cb(ngtcp2_conn* conn, ngtcp2_cid* cid, uint8_t* token, size_t cidlen, void* user_data){
-    // TODO - Consider implementing lookup and rehash. https://nghttp2.org/ngtcp2/ngtcp2_conn_get_scid.html
     int rv;
-
-    // fprintf(stdout, "Starting call to get_new_connection_id_cb\n");
 
     rand_bytes(cid->data, cidlen);
 
