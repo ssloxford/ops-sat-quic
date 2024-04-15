@@ -8,7 +8,15 @@
 
 #include "connection.h"
 
-// TODO - Comment structure variables
+typedef struct _server_settings {
+    int debug;
+
+    int reply;
+
+    // -1 if no output
+    int output_fd;
+} server_settings;
+
 typedef struct _server {
     ngtcp2_conn *conn;
     ngtcp2_crypto_conn_ref ref;
@@ -30,9 +38,7 @@ typedef struct _server {
     WOLFSSL* ssl;
     WOLFSSL_CTX* ctx;
 
-    int reply;
-
-    int debug;
+    server_settings *settings;
 } server;
 
 #endif

@@ -56,7 +56,7 @@ static int extend_max_local_streams_uni_cb(ngtcp2_conn *conn, uint64_t max_strea
     server *s = user_data;
 
     // If not replying data, no need to open a new stream. Saves a frame in the next packet
-    if (!s->reply) {
+    if (!s->settings->reply) {
         return 0;
     }
 
@@ -72,13 +72,19 @@ static int extend_max_local_streams_uni_cb(ngtcp2_conn *conn, uint64_t max_strea
 }
 
 static int recv_stream_data_cb(ngtcp2_conn *conn, uint32_t flags, int64_t stream_id, uint64_t offset, const uint8_t *data, size_t datalen, void *user_data, void *stream_user_data) {
-    fprintf(stdout, "Client sent: %*s\n", (int) datalen, data);
-
     int rv;
 
     server *s = user_data;
+
+    if (s->settings->output_fd != -1) {
+        rv = write(s->settings->output_fd, data, datalen);
+
+        if (rv < 0) {
+            return NGTCP2_ERR_CALLBACK_FAILURE;
+        }
+    }
     
-    if (s->reply) {
+    if (s->settings->reply) {
         rv = enqueue_message(data, datalen, s->stream_id, s->sent_offset, s->send_tail);
       
         if (rv < 0) {
@@ -292,7 +298,7 @@ static int server_accept_connection(server *s, uint8_t *buf, size_t buflen, ngtc
     // First packet is acceptable, so create the ngtcp2_conn
     ngtcp2_transport_params_default(&params);
 
-    server_settings_init(&callbacks, &settings, s->debug);
+    server_settings_init(&callbacks, &settings, s->settings->debug);
 
     // Docs state the the original_dcid field must be set
     params.original_dcid = header.dcid;
@@ -439,6 +445,12 @@ static int server_deinit(server *s) {
     return 0;
 }
 
+static void settings_default(server_settings *settings) {
+    settings->debug = 0;
+    settings->reply = 0;
+    settings->output_fd = -1;
+}
+
 void print_helpstring() {
     printf("-h: Print help string\n");
     printf("-p [port]: Specify port to use. Default 11111\n");
@@ -460,9 +472,8 @@ int main(int argc, char **argv) {
     ngtcp2_tstamp expiry, delta_time;
     int timeout;
 
-    int output_fd = STDOUT_FILENO;
-    s.debug = 0;
-    s.reply = 0;
+    server_settings settings;
+    settings_default(&settings);
 
     while ((opt = getopt(argc, argv, "hdp:f:r")) != -1) {
         switch (opt) {
@@ -473,15 +484,20 @@ int main(int argc, char **argv) {
                 server_port = optarg;
                 break;
             case 'd':
-                s.debug = 1;
+                settings.debug = 1;
                 break;
             case 'r':
-                s.reply = 1;
+                settings.reply = 1;
                 break;
             case 'f':
-                output_fd = open(optarg, O_WRONLY);
-                if (output_fd == -1) {
-                    fprintf(stderr, "Failed to open file %s\n", optarg);
+                if (optarg[0] == '\0') {
+                    // No file path given
+                    settings.output_fd = STDOUT_FILENO;
+                } else {
+                    settings.output_fd = open(optarg, O_WRONLY);
+                    if (settings.output_fd == -1) {
+                        fprintf(stderr, "Failed to open file %s\n", optarg);
+                    }
                 }
                 break;
             case '?':

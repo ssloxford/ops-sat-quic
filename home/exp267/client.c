@@ -185,7 +185,7 @@ static int client_ngtcp2_init(client *c, char* server_ip, char *server_port) {
     settings.initial_ts = timestamp();
 
     // Enable debugging
-    if (c->debug) {
+    if (c->settings->debug) {
         settings.log_printf = debug_log; // ngtcp2 debugging
     }
 
@@ -401,6 +401,12 @@ static void client_deinit(client *c) {
     close(c->fd);
 }
 
+static void default_settings(client_settings *settings) {
+    settings->debug = 0;
+
+    settings->input_fd = STDIN_FILENO;
+}
+
 void print_helpstring() {
     printf("-h: Print help string\n");
     printf("-i [ip]: Specifies IP to connect to. Default localhost\n");
@@ -418,7 +424,6 @@ int main(int argc, char **argv){
 
     struct pollfd polls[2];
 
-    int input_fd = STDIN_FILENO;
     size_t remaining_rand_data;
 
     uint8_t payload[1024];
@@ -430,7 +435,10 @@ int main(int argc, char **argv){
     ngtcp2_tstamp expiry, delta_time;
     int timeout;
 
-    c.debug = 0;
+    client_settings settings;
+    default_settings(&settings);
+
+    c.settings = &settings;
 
     while ((opt = getopt(argc, argv, "hdi:p:f:s:")) != -1) {
         switch (opt) {
@@ -444,17 +452,17 @@ int main(int argc, char **argv){
                 server_port = optarg;
                 break;
             case 'd':
-                c.debug = 1;
+                settings.debug = 1;
                 break;
             case 'f':
-                input_fd = open(optarg, O_RDONLY);
-                if (input_fd == -1) {
+                settings.input_fd = open(optarg, O_RDONLY);
+                if (settings.input_fd == -1) {
                     fprintf(stderr, "Failed to open file %s\n", optarg);
                 }
                 return 0;
                 break;
             case 's':
-                input_fd = -1;
+                settings.input_fd = -1;
                 remaining_rand_data = atoi(optarg);
                 break;
             case '?':
@@ -473,7 +481,7 @@ int main(int argc, char **argv){
     // Polling a negative fd is defined behaviour that will not ever return on that fd.
     // If not using input_fd, we can safely leave that fd as -1 and it will not be accessed
     polls[0].fd = c.fd;
-    polls[1].fd = input_fd;
+    polls[1].fd = settings.input_fd;
 
     polls[0].events = polls[1].events = POLLIN;
 
@@ -532,7 +540,7 @@ int main(int argc, char **argv){
             } else if (polls[1].revents & POLLIN) {
                 // Recieved input data to be transmitted
                 // By shortening the payload buffer by 1, there will be space to null terminate if needed
-                payloadlen = read(input_fd, payload, sizeof(payload)-1);
+                payloadlen = read(settings.input_fd, payload, sizeof(payload)-1);
 
                 if (payloadlen == -1) {
                     fprintf(stdout, "Failed to read from input: %s\n", strerror(errno));
@@ -541,13 +549,13 @@ int main(int argc, char **argv){
 
                 if (payloadlen == 0) {
                     // End of file reached
-                    close(input_fd);
+                    close(settings.input_fd);
                     client_close_connection(&c);
                     client_deinit(&c);
                     return 0;
                 }
 
-                if (input_fd == STDIN_FILENO) {
+                if (settings.input_fd == STDIN_FILENO) {
                     // Null terminate the string
                     payload[payloadlen] = '\0';
                     payloadlen++;
@@ -563,7 +571,7 @@ int main(int argc, char **argv){
                 c.send_tail = c.send_tail->next;
             }
 
-            if (input_fd == -1) {
+            if (settings.input_fd == -1) {
                 // We're using generated test data rather than data read from a file descriptor
                 // Generate and add some more data to the send queue
                 payloadlen = remaining_rand_data;

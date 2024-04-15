@@ -6,6 +6,12 @@
 
 #include "connection.h"
 
+typedef struct _client_settings {
+    int debug;
+
+    int input_fd;
+} client_settings;
+
 typedef struct _client {
     ngtcp2_conn *conn;
     ngtcp2_crypto_conn_ref ref;
@@ -28,9 +34,7 @@ typedef struct _client {
     WOLFSSL* ssl;
     WOLFSSL_CTX* ctx;
 
-    // TODO - Maybe this could be a global variable instead?
-    // Flag to determine if debugging code is on
-    int debug;
+    client_settings *settings;
 } client;
 
 #endif
