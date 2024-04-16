@@ -119,20 +119,10 @@ static int handshake_completed_cb(ngtcp2_conn *conn, void *user_data) {
     return 0;
 }
 
-static int server_wolfssl_init(server *s) {
-    WOLFSSL_METHOD* method;
-
+static int server_wolfssl_new(server *s) {
     int rv;
 
-    wolfSSL_Init();
-
-    method = wolfTLSv1_3_server_method();
-    if (method == NULL) {
-        fprintf(stderr, "Failed to create TLS method\n");
-        return ERROR_WOLFSSL_SETUP;
-    };
-
-    s->ctx = wolfSSL_CTX_new(method);
+    s->ctx = wolfSSL_CTX_new(wolfTLSv1_3_server_method());
     if (s->ctx == NULL) {
         fprintf(stderr, "Failed to create context\n");
         return ERROR_WOLFSSL_SETUP;
@@ -167,8 +157,6 @@ static int server_wolfssl_init(server *s) {
 
     wolfSSL_set_app_data(s->ssl, &s->ref);
     wolfSSL_set_accept_state(s->ssl);
-
-    return 0;
 }
 
 static int server_settings_init(ngtcp2_callbacks *callbacks, ngtcp2_settings *settings, int debug) {
@@ -277,10 +265,7 @@ static int server_init(server *s, char *server_port) {
 
     rand_init();
 
-    rv = server_wolfssl_init(s);
-    if (rv < 0) {
-        return rv;
-    }
+    wolfSSL_Init();
 
     rv = server_resolve_and_bind(s, server_port);
     if (rv < 0) {
@@ -295,6 +280,9 @@ static int server_close_connection(server *s) {
     s->stream_id = -1;
 
     ngtcp2_conn_del(s->conn);
+
+    wolfSSL_CTX_free(s->ctx);
+    wolfSSL_free(s->ssl);
 
     return 0;
 }
@@ -352,6 +340,9 @@ static int server_accept_connection(server *s, uint8_t *buf, size_t buflen, ngtc
         fprintf(stderr, "Failed to create connection instance from incomming request\n");
         return rv;
     }
+
+    // Creates new WOLFSSL and WOLFSSL_CTX pointers in the server
+    server_wolfssl_new(s);
 
     ngtcp2_conn_set_tls_native_handle(s->conn, s->ssl);
 
