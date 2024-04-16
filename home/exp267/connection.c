@@ -15,7 +15,7 @@
 #include "utils.h"
 #include "errors.h"
 
-ssize_t prepare_packet(ngtcp2_conn *conn, uint64_t stream_id, uint8_t* buf, size_t buflen, ngtcp2_ssize *wdatalen, struct iovec *iov, int fin) {
+ssize_t prepare_packet(ngtcp2_conn *conn, int64_t stream_id, uint8_t* buf, size_t buflen, ngtcp2_ssize *wdatalen, struct iovec *iov, int fin) {
     // Write stream prepares the message to be sent into buf and returns size of the message
     ngtcp2_tstamp ts = timestamp();
     ngtcp2_pkt_info pi;
@@ -50,23 +50,11 @@ ssize_t prepare_nonstream_packet(ngtcp2_conn *conn, uint8_t *buf, size_t buflen)
     return prepare_packet(conn, -1, buf, buflen, NULL, NULL, 0);
 }
 
-int send_packet(int fd, uint8_t* pkt, size_t pktlen) {
-    struct iovec msg_iov;
-    struct msghdr msg;
-
-    memset(&msg, 0, sizeof(msg));
-
+int send_packet(int fd, uint8_t* pkt, size_t pktlen, const struct sockaddr* dest_addr, socklen_t destlen) {
     int rv;
 
-    // Assume that there is a packet to be sent in the global buf array
-    msg_iov.iov_base = pkt;
-    msg_iov.iov_len = pktlen;
-
-    msg.msg_iov = &msg_iov;
-    msg.msg_iovlen = 1;
-
     // Don't need to poll ready to write since UDP sockets are connectinless, so can always write
-    rv = sendmsg(fd, &msg, 0);
+    rv = sendto(fd, pkt, pktlen, 0, dest_addr, destlen);
 
     // On success rv > 0 is the number of bytes sent
 
@@ -78,28 +66,10 @@ int send_packet(int fd, uint8_t* pkt, size_t pktlen) {
     return rv;
 }
 
-ssize_t read_message(int fd, uint8_t *buf, size_t buflen, struct sockaddr *remote_addr, size_t remote_addrlen) {    
-    struct msghdr msg;
-
+ssize_t read_message(int fd, uint8_t *buf, size_t buflen, struct sockaddr *remote_addr, socklen_t *remote_addrlen) {    
     ssize_t bytes_read;
-
-    struct iovec iov;
-
-    iov.iov_base = buf;
-    iov.iov_len = buflen;
     
-    // Clear message structure
-    memset(&msg, 0, sizeof(msg));
-
-    // Sents the fields where the senders address will be saved to by recvmsg
-    msg.msg_name = remote_addr;
-    msg.msg_namelen = remote_addrlen;
-
-    // msg_iov is an array of iovecs to write the recieved message into. msg_iovlen is the size of that array.
-    msg.msg_iov = &iov;
-    msg.msg_iovlen = 1;
-    
-    bytes_read = recvmsg(fd, &msg, MSG_DONTWAIT);
+    bytes_read = recvfrom(fd, buf, buflen, MSG_DONTWAIT, remote_addr, remote_addrlen);
 
     if (bytes_read == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -112,10 +82,10 @@ ssize_t read_message(int fd, uint8_t *buf, size_t buflen, struct sockaddr *remot
     return bytes_read;
 }
 
-int write_step(ngtcp2_conn *conn, int fd, int fin, const data_node *send_queue, size_t *stream_offset) {
+ssize_t write_step(ngtcp2_conn *conn, int fd, const data_node *send_queue, size_t *stream_offset) {
     // Data and datalen is the data to be written
     // Buf and bufsize is a general use memory allocation (eg. to pass packets to subroutines)
-    size_t pktlen;
+    ssize_t pktlen;
     struct iovec iov;
 
     uint8_t buf[BUF_SIZE];
@@ -126,6 +96,8 @@ int write_step(ngtcp2_conn *conn, int fd, int fin, const data_node *send_queue, 
 
     data_node *pkt_to_send = send_queue->next;
 
+    const ngtcp2_path *path = ngtcp2_conn_get_path(conn);
+
     if (pkt_to_send != NULL) {
         // There's something in the send queue
         ngtcp2_ssize stream_framelen;
@@ -135,13 +107,13 @@ int write_step(ngtcp2_conn *conn, int fd, int fin, const data_node *send_queue, 
 
         // A stream is open, so we will write to the stream
         // Will also add "housekeeping" frames to the packet
-        pktlen = prepare_packet(conn, pkt_to_send->stream_id, buf, sizeof(buf), &stream_framelen, &iov, fin);
+        pktlen = prepare_packet(conn, pkt_to_send->stream_id, buf, sizeof(buf), &stream_framelen, &iov, pkt_to_send->fin_bit);
 
         if (pktlen < 0) {
             return pktlen;
         }
 
-        rv = send_packet(fd, buf, pktlen);
+        rv = send_packet(fd, buf, pktlen, path->remote.addr, path->remote.addrlen);
 
         if (rv < 0) {
             return rv;
@@ -164,9 +136,11 @@ int write_step(ngtcp2_conn *conn, int fd, int fin, const data_node *send_queue, 
 }
 
 // Processes preparing and sending all available acknowledge packets, handshake, etc.
-int send_nonstream_packets(ngtcp2_conn *conn, int fd, uint8_t *buf, size_t buflen, int limit) {
-    size_t pktlen;
+ssize_t send_nonstream_packets(ngtcp2_conn *conn, int fd, uint8_t *buf, size_t buflen, int limit) {
+    ssize_t pktlen;
     int rv;
+
+    const ngtcp2_path *path = ngtcp2_conn_get_path(conn);
 
     // Limit less than 0 is treated as no limit
     for (int i = 0; limit < 0 || i < limit; i++) {
@@ -180,7 +154,7 @@ int send_nonstream_packets(ngtcp2_conn *conn, int fd, uint8_t *buf, size_t bufle
             return pktlen;
         }
 
-        rv = send_packet(fd, buf, pktlen);
+        rv = send_packet(fd, buf, pktlen, path->remote.addr, path->remote.addrlen);
 
         if (rv < 0) {
             return rv;
@@ -191,7 +165,9 @@ int send_nonstream_packets(ngtcp2_conn *conn, int fd, uint8_t *buf, size_t bufle
 }
 
 int get_timeout(ngtcp2_conn *conn) {
-    ngtcp2_tstamp expiry, delta_time, now = timestamp();
+    ngtcp2_tstamp expiry, now = timestamp();
+
+    int64_t delta_time;
 
     uint64_t timeout;
 
@@ -244,7 +220,7 @@ int handle_timeout(ngtcp2_conn *conn, int fd) {
     return 0;
 }
 
-int enqueue_message(const uint8_t *payload, size_t payloadlen, uint64_t stream_id, uint64_t offset, data_node *queue_tail) {
+int enqueue_message(const uint8_t *payload, size_t payloadlen, uint64_t stream_id, uint64_t offset, int fin, data_node *queue_tail) {
     uint8_t *pkt_data = malloc(payloadlen);
 
     if (pkt_data == NULL) {
@@ -268,6 +244,8 @@ int enqueue_message(const uint8_t *payload, size_t payloadlen, uint64_t stream_i
     queue_node->stream_id = stream_id;
 
     queue_node->offset = offset;
+
+    queue_node->fin_bit = fin;
 
     // Join the values after queue_tail onto the created node
     // For a true tail node, this will be NULL

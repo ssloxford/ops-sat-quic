@@ -6,6 +6,8 @@
 
 #include <wolfssl/ssl.h>
 
+#include <sys/socket.h>
+
 #include "connection.h"
 
 typedef struct _server_settings {
@@ -34,8 +36,8 @@ typedef struct _server {
     data_node *inflight_head, *inflight_tail, *send_tail;
     uint64_t sent_offset;
 
-    ngtcp2_sockaddr_union localsock;
-    ngtcp2_socklen locallen;
+    struct sockaddr_storage localsock;
+    socklen_t locallen;
 
     WOLFSSL* ssl;
     WOLFSSL_CTX* ctx;

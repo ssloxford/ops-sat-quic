@@ -22,7 +22,7 @@ typedef struct _client {
     int fd;
 
     // TODO - Support multiple stream ids 
-    uint64_t stream_id;
+    int64_t stream_id;
 
     // A linked list of all data queued to be sent or inflight (send but not acknowledged)
     // Inflight_head and send_head are dummy header nodes for their respective queues
@@ -32,7 +32,7 @@ typedef struct _client {
     // Structures to store the local and remote addresses of the path being used
     ngtcp2_sockaddr_union localsock, remotesock;
     ngtcp2_socklen locallen, remotelen;
-    
+
     WOLFSSL* ssl;
     WOLFSSL_CTX* ctx;
 

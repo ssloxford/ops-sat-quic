@@ -93,7 +93,7 @@ static int recv_stream_data_cb(ngtcp2_conn *conn, uint32_t flags, int64_t stream
     }
     
     if (s->settings->reply) {
-        rv = enqueue_message(data, datalen, s->stream_id, s->sent_offset, s->send_tail);
+        rv = enqueue_message(data, datalen, s->stream_id, s->sent_offset, 0, s->send_tail);
       
         if (rv < 0) {
             return NGTCP2_ERR_CALLBACK_FAILURE;
@@ -249,7 +249,7 @@ static int server_resolve_and_bind(server *s, const char *server_port) {
 }
 
 static ngtcp2_conn* get_conn (ngtcp2_crypto_conn_ref* ref) {
-    server *data = (server*) ref->user_data;
+    server *data = ref->user_data;
 
     return data->conn;
 }
@@ -348,14 +348,12 @@ static int server_accept_connection(server *s, uint8_t *buf, size_t buflen, ngtc
 
     rv = ngtcp2_conn_server_new(&s->conn, &header.scid, &scid, path, header.version, &callbacks, &settings, &params, NULL, s);
 
-    ngtcp2_conn_set_tls_native_handle(s->conn, s->ssl);
-
     if (rv < 0) {
         fprintf(stderr, "Failed to create connection instance from incomming request\n");
         return rv;
     }
 
-    rv = connect(s->fd, path->remote.addr, path->remote.addrlen);
+    ngtcp2_conn_set_tls_native_handle(s->conn, s->ssl);
 
     if (rv < 0) {
         fprintf(stderr, "Failed to add connection to fd\n");
@@ -367,17 +365,18 @@ static int server_accept_connection(server *s, uint8_t *buf, size_t buflen, ngtc
 }
 
 static int server_read_step(server *s) {
-    struct sockaddr remote_addr;
+    struct sockaddr_storage remote_addr;
+    socklen_t remote_addrlen = sizeof(remote_addr);
     ngtcp2_version_cid version;
 
     int rv;
 
     uint8_t buf[BUF_SIZE];
 
-    size_t pktlen;
+    ssize_t pktlen;
 
     for (;;) {
-        pktlen = read_message(s->fd, buf, sizeof(buf), &remote_addr, sizeof(remote_addr));
+        pktlen = read_message(s->fd, buf, sizeof(buf), (struct sockaddr*) &remote_addr, &remote_addrlen);
 
         if (pktlen == ERROR_NO_NEW_MESSAGE) {
             return 0;
@@ -399,15 +398,15 @@ static int server_read_step(server *s) {
 
         // If got to here, the packet recieved is an acceptable QUIC packet
 
-        // remoteaddr populated by read_message
+        // remoteaddr populated by read_message. Localsock already known
         ngtcp2_path path = {
             .local = {
                 .addr = (ngtcp2_sockaddr*) &s->localsock,
                 .addrlen = s->locallen,
             },
             .remote = {
-                .addr = &remote_addr,
-                .addrlen = sizeof(remote_addr),
+                .addr = (ngtcp2_sockaddr*) &remote_addr,
+                .addrlen = remote_addrlen,
             }
         };
 
@@ -427,10 +426,13 @@ static int server_read_step(server *s) {
                 // Client has closed it's connection
                 server_close_connection(s);
                 return ERROR_DRAINING_STATE;
-            } else {
-                fprintf(stderr, "Failed to read packet: %s\n", ngtcp2_strerror(rv));
-                return rv; 
             }
+            fprintf(stderr, "Failed to read packet: %s\n", ngtcp2_strerror(rv));
+
+            if (rv == NGTCP2_ERR_CRYPTO) {
+                fprintf(stderr, "TLS alert: %d\n", ngtcp2_conn_get_tls_alert(s->conn));
+            }
+            return rv; 
         }
     }
 
@@ -449,7 +451,7 @@ static int server_write_step(server *s) {
     // inflight_tail is also send_head
 
     // TODO - Implement taking and providing fin bit
-    rv = write_step(s->conn, s->fd, 0, s->inflight_tail, &s->sent_offset);
+    rv = write_step(s->conn, s->fd, s->inflight_tail, &s->sent_offset);
 
     if (rv < 0) {
         return rv;
@@ -460,12 +462,6 @@ static int server_write_step(server *s) {
         // Steps the head of the send queue onto the tail of the inflight queue
         s->inflight_tail = s->inflight_tail->next;
     }
-
-    return 0;
-}
-
-static int server_deinit(server *s) {
-    // TODO - Cleanup conn and wolfSSL
 
     return 0;
 }
@@ -496,7 +492,6 @@ int main(int argc, char **argv) {
 
     struct pollfd conn_poll;
 
-    ngtcp2_tstamp expiry, delta_time;
     int timeout;
 
     server_settings settings;

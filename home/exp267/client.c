@@ -60,6 +60,7 @@ static int acked_stream_data_offset_cb(ngtcp2_conn *conn, int64_t stream_id, uin
 static int extend_max_local_streams_uni_cb(ngtcp2_conn *conn, uint64_t max_streams, void *user_data) {
     int64_t stream_id;
     int rv = ngtcp2_conn_open_uni_stream(conn, &stream_id, NULL);
+
     if (rv < 0) {
         fprintf(stderr, "Failed to open new uni stream: %s\n", ngtcp2_strerror(rv));
         return ERROR_NEW_STREAM;
@@ -77,6 +78,19 @@ static int recv_stream_data_cb(ngtcp2_conn *conn, uint32_t flags, int64_t stream
     return 0;
 }
 
+static int stream_close_cb(ngtcp2_conn *conn, uint32_t flags, int64_t stream_id, uint64_t error_code, void *user_data, void *stream_data) {
+    client *c = user_data;
+    
+    if (stream_id != c->stream_id) {
+        fprintf(stderr, "Attepmting to close stream %ld, but open client stream is %ld", stream_id, c->stream_id);
+        return NGTCP2_ERR_CALLBACK_FAILURE;
+    }
+
+    c->stream_id = -1;
+
+    return 0;
+}
+
 static int handshake_completed_cb(ngtcp2_conn *conn, void *user_data) {
     client *c = user_data;
 
@@ -90,8 +104,6 @@ static int handshake_completed_cb(ngtcp2_conn *conn, void *user_data) {
 }
 
 static int client_wolfssl_init(client *c) {
-    WOLFSSL_METHOD* method;
-
     int rv;
 
     wolfSSL_Init();
@@ -126,8 +138,7 @@ static int client_wolfssl_init(client *c) {
 
 static int client_resolve_and_connect(client *c, const char *target_host, const char *target_port) {
     struct addrinfo hints;
-    struct addrinfo *result, *rp;
-    int rv, fd;
+    int rv;
 
     // Documentation says that unused fields in hints (eg. next) must be 0/null
     memset(&hints, 0, sizeof(hints));
@@ -169,7 +180,7 @@ static int client_ngtcp2_init(client *c, char* server_ip, char *server_port) {
         recv_stream_data_cb, /* recv_stream_data */
         acked_stream_data_offset_cb, /* acked_stream_data_offset */
         NULL, /* stream_open */
-        NULL, /* stream_close */
+        stream_close_cb, /* stream_close */
         NULL, /* recv_stateless_reset */
         ngtcp2_crypto_recv_retry_cb,
         NULL, /* extend_max_local_streams_bidi */
@@ -263,7 +274,7 @@ static int client_ngtcp2_init(client *c, char* server_ip, char *server_port) {
 }
 
 static ngtcp2_conn* get_conn (ngtcp2_crypto_conn_ref* ref) {
-    client *c = (client*) ref->user_data;
+    client *c = ref->user_data;
     return c->conn;
 }
 
@@ -307,8 +318,7 @@ static int client_init(client *c, char* server_ip, char *server_port) {
 static int client_write_step(client *c) {
     int rv;
 
-    // TODO - Implement deciding when fin
-    rv = write_step(c->conn, c->fd, 0, c->inflight_tail, &c->sent_offset);
+    rv = write_step(c->conn, c->fd, c->inflight_tail, &c->sent_offset);
 
     if (rv < 0) {
         return rv;
@@ -325,16 +335,17 @@ static int client_write_step(client *c) {
 
 static int client_read_step(client *c) {
     ngtcp2_sockaddr_union remote_addr;
+    socklen_t remote_addrlen = sizeof(remote_addr);
     ngtcp2_version_cid version;
 
     uint8_t buf[BUF_SIZE];
 
     int rv;
 
-    size_t pktlen;
+    ssize_t pktlen;
 
     for (;;) {
-        pktlen = read_message(c->fd, buf, sizeof(buf), (ngtcp2_sockaddr*) &remote_addr, sizeof(remote_addr));
+        pktlen = read_message(c->fd, buf, sizeof(buf), (struct sockaddr*) &remote_addr, &remote_addrlen);
 
         if (pktlen == ERROR_NO_NEW_MESSAGE) {
             return 0;
@@ -365,7 +376,7 @@ static int client_read_step(client *c) {
             },
             .remote = {
                 .addr = (ngtcp2_sockaddr*) &remote_addr,
-                .addrlen = sizeof(remote_addr),
+                .addrlen = remote_addrlen,
             }
         };
 
@@ -397,6 +408,8 @@ static int client_close_connection(client *c) {
 
     ngtcp2_ssize pktlen;
 
+    ngtcp2_ccerr_default(&ccerr);
+
     ccerr.type = NGTCP2_CCERR_TYPE_APPLICATION;
 
     ngtcp2_path_storage_zero(&ps);
@@ -411,14 +424,18 @@ static int client_close_connection(client *c) {
         return pktlen;
     }
 
-    rv = send_packet(c->fd, buf, pktlen);
+    rv = send_packet(c->fd, buf, pktlen, ps.path.remote.addr, ps.path.remote.addrlen);
 
     if (rv < 0) {
         return rv;
     }
+
+    return 0;
 }
 
 static void client_deinit(client *c) {
+    client_close_connection(c);
+
     ngtcp2_conn_del(c->conn);
 
     wolfSSL_free(c->ssl);
@@ -459,7 +476,6 @@ int main(int argc, char **argv){
     char *server_ip = DEFAULT_IP;
     char *server_port = SERVER_PORT;
 
-    ngtcp2_tstamp expiry, delta_time;
     int timeout;
 
     client_settings settings;
@@ -580,7 +596,6 @@ int main(int argc, char **argv){
                 if (payloadlen == 0) {
                     // End of file reached
                     close(settings.input_fd);
-                    client_close_connection(&c);
                     client_deinit(&c);
                     return 0;
                 }
@@ -591,7 +606,7 @@ int main(int argc, char **argv){
                     payloadlen++;
                 }
 
-                rv = enqueue_message(payload, payloadlen, c.stream_id, c.sent_offset, c.send_tail);
+                rv = enqueue_message(payload, payloadlen, c.stream_id, c.sent_offset, 0, c.send_tail);
 
                 if (rv < 0) {
                     return rv;
@@ -603,6 +618,11 @@ int main(int argc, char **argv){
 
             if (settings.input_fd == -1) {
                 // We're using generated test data rather than data read from a file descriptor
+                if (remaining_rand_data == 0) {
+                    client_deinit(&c);
+                    return 0;
+                }
+
                 // Generate and add some more data to the send queue
                 payloadlen = remaining_rand_data;
 
@@ -612,13 +632,13 @@ int main(int argc, char **argv){
 
                 rand_bytes(payload, payloadlen);
 
-                rv = enqueue_message(payload, payloadlen, c.stream_id, c.sent_offset, c.send_tail);
+                remaining_rand_data -= payloadlen;
+
+                rv = enqueue_message(payload, payloadlen, c.stream_id, c.sent_offset, remaining_rand_data == 0, c.send_tail);
 
                 if (rv < 0) {
                     return rv;
                 }
-
-                remaining_rand_data -= payloadlen;
 
                 c.send_tail = c.send_tail->next;
             }
