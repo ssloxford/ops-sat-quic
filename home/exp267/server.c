@@ -475,7 +475,9 @@ int main(int argc, char **argv) {
     server_settings settings;
     settings_default(&settings);
 
-    while ((opt = getopt(argc, argv, "hdp:f:r")) != -1) {
+    s.settings = &settings;
+
+    while ((opt = getopt(argc, argv, "hdp:f::r")) != -1) {
         switch (opt) {
             case 'h':
                 print_helpstring();
@@ -490,7 +492,7 @@ int main(int argc, char **argv) {
                 settings.reply = 1;
                 break;
             case 'f':
-                if (optarg[0] == '\0') {
+                if (optarg == 0) {
                     // No file path given
                     settings.output_fd = STDOUT_FILENO;
                 } else {
