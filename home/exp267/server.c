@@ -19,6 +19,8 @@ static int acked_stream_data_offset_cb(ngtcp2_conn *conn, int64_t stream_id, uin
     // The remote has acknowledged all data in the range [offset, offset+datalen)    
     server *s = user_data;
 
+    uint64_t delta;
+
     // Start on the dummy header
     data_node *prev_ptr = s->inflight_head;
     
@@ -28,6 +30,12 @@ static int acked_stream_data_offset_cb(ngtcp2_conn *conn, int64_t stream_id, uin
             // This frame has been acked in this call. We can deallocate it
             // Update the pointers
             prev_ptr->next = ptr->next;
+
+            if (s->settings->timing) {
+                delta = timestamp_ms() - ptr->time_sent;
+
+                printf("Pacekt at offset %lu acknowledged. Total time inflight: %lu ms\n", offset, delta);
+            }
 
             free(ptr->payload);
             free(ptr);
@@ -98,6 +106,19 @@ static int recv_stream_data_cb(ngtcp2_conn *conn, uint32_t flags, int64_t stream
     return 0;
 }
 
+
+static int handshake_completed_cb(ngtcp2_conn *conn, void *user_data) {
+    server *s = user_data;
+
+    if (s->settings->timing) {
+        uint64_t delta = timestamp_ms() - s->initial_ts;
+
+        printf("Handshake completed: %lu ms\n", delta);
+    }
+
+    return 0;
+}
+
 static int server_wolfssl_init(server *s) {
     WOLFSSL_METHOD* method;
 
@@ -156,7 +177,7 @@ static int server_settings_init(ngtcp2_callbacks *callbacks, ngtcp2_settings *se
         NULL,
         ngtcp2_crypto_recv_client_initial_cb, /* recv_client_initial */
         ngtcp2_crypto_recv_crypto_data_cb,
-        NULL, /* handshake_completed */
+        handshake_completed_cb, /* handshake_completed */
         NULL, /* recv_version_negotiation */
         ngtcp2_crypto_encrypt_cb,
         ngtcp2_crypto_decrypt_cb,
@@ -198,7 +219,7 @@ static int server_settings_init(ngtcp2_callbacks *callbacks, ngtcp2_settings *se
     memcpy(callbacks, &local_callbacks, sizeof(local_callbacks));
 
     ngtcp2_settings_default(settings);
-    settings->initial_ts = timestamp();
+    settings->initial_ts = timestamp_ms();
     if (debug) {
         settings->log_printf = debug_log; // Allows ngtcp2 debug
     }
@@ -249,6 +270,10 @@ static int server_init(server *s, char *server_port) {
     s->sent_offset = 0;
 
     s->locallen = sizeof(s->localsock);
+
+    if (s->settings->timing) {
+        s->initial_ts = timestamp();
+    }
 
     rand_init();
 
@@ -449,6 +474,7 @@ static void settings_default(server_settings *settings) {
     settings->debug = 0;
     settings->reply = 0;
     settings->output_fd = -1;
+    settings->timing = 0;
 }
 
 void print_helpstring() {
@@ -456,6 +482,7 @@ void print_helpstring() {
     printf("-p [port]: Specify port to use. Default 11111\n");
     printf("-d: Enable debugging output\n");
     printf("-f [file]: File to write recieved data into. Default stdout\n");
+    printf("-t: Enable timing and reporting\n");
     printf("-r: Enable echoing all data back to client\n");
 }
 
@@ -477,7 +504,7 @@ int main(int argc, char **argv) {
 
     s.settings = &settings;
 
-    while ((opt = getopt(argc, argv, "hdp:f::r")) != -1) {
+    while ((opt = getopt(argc, argv, "htdp:f::r")) != -1) {
         switch (opt) {
             case 'h':
                 print_helpstring();
@@ -501,6 +528,9 @@ int main(int argc, char **argv) {
                         fprintf(stderr, "Failed to open file %s\n", optarg);
                     }
                 }
+                break;
+            case 't':
+                settings.timing = 1;
                 break;
             case '?':
                 printf("Unknown option: -%c\n", optopt);

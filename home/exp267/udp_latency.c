@@ -26,7 +26,7 @@ void print_helpstring() {
     printf("-l [chance]: Sets the packet loss chance. Default 0\n");
 }
 
-waiting_pkt* make_node(uint8_t *data, size_t datalen, int delay, time_t start_time) {
+waiting_pkt* make_node(uint8_t *data, size_t datalen, int delay) {
     // Delay measured in ms
     waiting_pkt *node = malloc(sizeof(waiting_pkt));
 
@@ -40,7 +40,7 @@ waiting_pkt* make_node(uint8_t *data, size_t datalen, int delay, time_t start_ti
     node->next = NULL;
 
     // Time recieved
-    node->send_time = difftime(time(NULL), start_time) * 1000 + delay;
+    node->send_time = timestamp_ms() + delay;
 
     return node;
 }
@@ -48,8 +48,6 @@ waiting_pkt* make_node(uint8_t *data, size_t datalen, int delay, time_t start_ti
 int main(int argc, char **argv) {
     char opt;
     int rv, tmp, discard_packet;
-
-    time_t start_time = time(NULL);
 
     int time_since_start;
 
@@ -68,7 +66,7 @@ int main(int argc, char **argv) {
     waiting_pkt *pkt_ptr;
 
     struct pollfd polls[2];
-    int timeout;
+    int left_timeout, right_timeout, timeout;
 
     int delay_ms = 0;
     double loss_chance = 0;
@@ -181,32 +179,33 @@ int main(int argc, char **argv) {
     polls[0].events = polls[1].events = POLLIN;
 
     for (;;) {
-        if (left_waiting_pkts.next == NULL && right_waiting_pkts.next == NULL) {
-            // Both lists are empty
-            timeout = -1;
+        // Calculate the timeout for the packets waiting to be sent left
+        if (left_waiting_pkts.next == NULL) {
+            left_timeout = -1;
         } else {
-            // One list is non-empty
-            time_since_start = difftime(time(NULL), start_time) * 1000;
+            left_timeout = left_waiting_pkts.next->send_time - timestamp_ms();
+            if (left_timeout < 0) left_timeout = 0;
+        }
 
-            if (left_waiting_pkts.next == NULL) {
-                // Left list is empty. Therefore right list is non-empty
-                timeout = right_waiting_pkts.next->send_time - time_since_start;
-            } else if (right_waiting_pkts.next == NULL) {
-                // Right list is empty. Therefore left list is non-empty
-                timeout = left_waiting_pkts.next->send_time - time_since_start;
-            } else {
-                // Both are non-empty
-                timeout = left_waiting_pkts.next->send_time - time_since_start;
-                tmp = right_waiting_pkts.next->send_time - time_since_start;
-                if (tmp < timeout) {
-                    // right timeout is before left timeout
-                    timeout = tmp;
-                }
-            }
-            if (timeout < 0) {
-                // Safety check in case one of the timeouts elapsed while processing previous loop iteration
-                // One of the timeouts has elapsed. Important not to provide negative timeout to poll in this case
-                timeout = 0;
+        // Calculate the timeouts for the packets waiting to be sent right
+        if (right_waiting_pkts.next == NULL) {
+            right_timeout = -1;
+        } else {
+            right_timeout = right_waiting_pkts.next->send_time - timestamp_ms();
+            if (right_timeout < 0) right_timeout = 0;
+        }
+
+        // Let timeout be the minimum of those above (where they're set)
+        if (left_timeout == -1) {
+            // No timeout on left. Use the right timeout
+            timeout = right_timeout;
+        } else {
+            // There's a timeout on the left
+            timeout = left_timeout;
+
+            // If there's a right timeout and it's before the left timeout, take the min
+            if (right_timeout != -1 && right_timeout < left_timeout) {
+                timeout = right_timeout;
             }
         }
 
@@ -214,13 +213,11 @@ int main(int argc, char **argv) {
         rv = poll(polls, 2, timeout);
 
         if (rv == 0) {
-            // Timeout reached before any sockets ready to read
-            time_since_start = difftime(time(NULL), start_time) * 1000;
-
+            // Poll continued due to timeout
             // Process right packets
             for (pkt_ptr = right_waiting_pkts.next; pkt_ptr != NULL; pkt_ptr = right_waiting_pkts.next) {
                 // Packets are arranged in ascending order. If this one is still waiting, we can break.
-                if (pkt_ptr->send_time > time_since_start) break;
+                if (pkt_ptr->send_time > timestamp_ms()) break;
 
                 // Send the packet data to it's intended dest. If remote address not yet set, drop the packet
                 if (right_addr_set) {
@@ -242,7 +239,7 @@ int main(int argc, char **argv) {
 
             // Exactly as above, but with the left queue
             for (pkt_ptr = left_waiting_pkts.next; pkt_ptr != NULL; pkt_ptr = left_waiting_pkts.next) {
-                if (pkt_ptr->send_time > time_since_start) break;
+                if (pkt_ptr->send_time > timestamp_ms()) break;
 
                 if (left_addr_set) {
                     sendto(left_fd, pkt_ptr->data, pkt_ptr->datalen, 0, (struct sockaddr*) &left_remote, left_remotelen);
@@ -260,6 +257,7 @@ int main(int argc, char **argv) {
 
             // All pending packets have been processed. Return to the poll call
         } else {
+            // We must have recieved a packet
             // RNG to determine if we need to drop this packet
             rand_bytes(&rand_byte, 1);
 
@@ -269,7 +267,7 @@ int main(int argc, char **argv) {
                 discard_packet = 0;
             }
 
-            // Poll continued due to recieved message
+            // Even if dropping the packet, we need the buffer to read into to take it out of the socket buffer
             buf = malloc(MAX_UDP_PAYLOAD);
 
             if (buf == NULL) {
@@ -298,7 +296,7 @@ int main(int argc, char **argv) {
                     continue;
                 }
 
-                pkt_ptr = make_node(buf, rv, delay_ms, start_time);
+                pkt_ptr = make_node(buf, rv, delay_ms);
 
                 if (pkt_ptr == NULL) {
                     // Out of memory
@@ -327,7 +325,7 @@ int main(int argc, char **argv) {
                     continue;
                 }
 
-                pkt_ptr = make_node(buf, rv, delay_ms, start_time);
+                pkt_ptr = make_node(buf, rv, delay_ms);
 
                 if (pkt_ptr == NULL) {
                     return -1;

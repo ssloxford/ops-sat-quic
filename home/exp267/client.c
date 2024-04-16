@@ -16,6 +16,9 @@ static int acked_stream_data_offset_cb(ngtcp2_conn *conn, int64_t stream_id, uin
     // The server has acknowledged all data in the range [offset, offset+datalen)    
     client *c = user_data;
 
+    // Used for calculating inflight time of acknowledged packets, to be reported if timing is on
+    uint64_t delta;
+
     // Start on the dummy header
     data_node *prev_ptr = c->inflight_head;
     
@@ -25,6 +28,13 @@ static int acked_stream_data_offset_cb(ngtcp2_conn *conn, int64_t stream_id, uin
             // This frame has been acked in this call. We can deallocate it
             // Update the pointers
             prev_ptr->next = ptr->next;
+
+            if (c->settings->timing) {
+                // Report total time in flight of this packet
+                delta = timestamp_ms() - ptr->time_sent;
+
+                printf("Packet at offset %lu acknowledged. Total time inflight: %lu ms\n", offset, delta);
+            }
 
             free(ptr->payload);
             free(ptr);
@@ -63,6 +73,18 @@ static int extend_max_local_streams_uni_cb(ngtcp2_conn *conn, uint64_t max_strea
 
 static int recv_stream_data_cb(ngtcp2_conn *conn, uint32_t flags, int64_t stream_id, uint64_t offset, const uint8_t *data, size_t datalen, void *user_data, void *stream_user_data) {
     fprintf(stdout, "Server sent: %*s\n", (int) datalen, data);
+
+    return 0;
+}
+
+static int handshake_completed_cb(ngtcp2_conn *conn, void *user_data) {
+    client *c = user_data;
+
+    if (c->settings->timing) {
+        uint64_t delta = timestamp_ms() - c->initial_ts;
+
+        printf("Handshake completed: %lu ms\n", delta);
+    }
 
     return 0;
 }
@@ -139,7 +161,7 @@ static int client_ngtcp2_init(client *c, char* server_ip, char *server_port) {
         ngtcp2_crypto_client_initial_cb,
         NULL, /* recv_client_initial */
         ngtcp2_crypto_recv_crypto_data_cb,
-        NULL, /* handshake_completed */
+        handshake_completed_cb, /* handshake_completed */
         NULL, /* recv_version_negotiation */
         ngtcp2_crypto_encrypt_cb,
         ngtcp2_crypto_decrypt_cb,
@@ -260,6 +282,10 @@ static int client_init(client *c, char* server_ip, char *server_port) {
 
     c->locallen = sizeof(c->localsock);
     c->remotelen = sizeof(c->remotesock);
+
+    if (c->settings->timing) {
+        c->initial_ts = timestamp_ms();
+    }
 
     rand_init();
 
@@ -403,7 +429,7 @@ static void client_deinit(client *c) {
 
 static void default_settings(client_settings *settings) {
     settings->debug = 0;
-
+    settings->timing = 0;
     settings->input_fd = STDIN_FILENO;
 }
 
@@ -413,6 +439,7 @@ void print_helpstring() {
     printf("-p [port]: Specifies port to connect to. Default 11111\n");
     printf("-f [file]: Specifies source of transmission data. Default stdin\n");
     printf("-s [bytes]: Generate and send [bytes] random bytes. Negative number for infinite bytes. Cannot be used with -f\n");
+    printf("-t: Enable timing and reporting\n");
     printf("-d: Enable debug printing\n");
 }
 
@@ -440,7 +467,7 @@ int main(int argc, char **argv){
 
     c.settings = &settings;
 
-    while ((opt = getopt(argc, argv, "hdi:p:f:s:")) != -1) {
+    while ((opt = getopt(argc, argv, "hdti:p:f:s:")) != -1) {
         switch (opt) {
             case 'h':
                 print_helpstring();
@@ -464,6 +491,9 @@ int main(int argc, char **argv){
             case 's':
                 settings.input_fd = -1;
                 remaining_rand_data = atoi(optarg);
+                break;
+            case 't':
+                settings.timing = 1;
                 break;
             case '?':
                 printf("Unknown option -%c\n", optopt);

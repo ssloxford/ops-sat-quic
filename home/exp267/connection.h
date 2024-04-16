@@ -17,6 +17,9 @@ typedef struct _data_node {
     // Total length of data sent before this one
     uint64_t offset;
 
+    // Time sent according to timestamp_ms()
+    uint64_t time_sent;
+
     struct _data_node *next;
 } data_node;
 
@@ -31,6 +34,8 @@ ssize_t read_message(int fd, uint8_t *buf, size_t buflen, struct sockaddr *remot
 int write_step(ngtcp2_conn *conn, int fd, int fin, const data_node *send_queue, size_t *stream_offset);
 
 int send_nonstream_packets(ngtcp2_conn *conn, int fd, uint8_t *buf, size_t buflen, int limit);
+
+int get_timeout(ngtcp2_conn *conn);
 
 int handle_timeout(ngtcp2_conn *conn, int fd);
 

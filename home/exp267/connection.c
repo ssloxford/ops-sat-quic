@@ -9,6 +9,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netdb.h>
+#include <limits.h>
 
 #include "connection.h"
 #include "utils.h"
@@ -146,6 +147,8 @@ int write_step(ngtcp2_conn *conn, int fd, int fin, const data_node *send_queue, 
             return rv;
         }
 
+        pkt_to_send->time_sent = timestamp_ms();
+
         *stream_offset = *stream_offset + stream_framelen;
     }
 
@@ -185,6 +188,37 @@ int send_nonstream_packets(ngtcp2_conn *conn, int fd, uint8_t *buf, size_t bufle
     }
 
     return 0;
+}
+
+int get_timeout(ngtcp2_conn *conn) {
+    ngtcp2_tstamp expiry, delta_time, now = timestamp();
+
+    uint64_t timeout;
+
+    // The timestamp (according to timestamp()) of the next time-sensitive intervention
+    // Conn expiry is updated as calls to writev_stream etc. are made
+    expiry = ngtcp2_conn_get_expiry(conn);
+
+    if (expiry == UINT64_MAX) {
+        // Not waiting on any expiry
+        return -1;
+    } else {
+        // Expiry should be ahead of timestamp()
+        delta_time = expiry - now;
+        if (delta_time < 0) {
+            // Expiry to wait on has passed. Continue immediately
+            return 0;
+        } else {
+            // Return millisecond resolution. Timestamp uses nanosecond resolution
+            // Will truncate to a millisecond. Round up to not underestimate
+            timeout = delta_time / (1000 * 1000);
+            if (timeout >= INT_MAX) {
+                // Clamp the value down to max int value. We can just set another wait if needed (INT_MAX ms will be a while)
+                return INT_MAX;
+            }
+            return timeout+1;
+        }
+    }
 }
 
 int handle_timeout(ngtcp2_conn *conn, int fd) {

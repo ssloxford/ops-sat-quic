@@ -15,6 +15,8 @@ typedef struct _server_settings {
 
     // -1 if no output
     int output_fd;
+
+    int timing;
 } server_settings;
 
 typedef struct _server {
@@ -39,6 +41,8 @@ typedef struct _server {
     WOLFSSL_CTX* ctx;
 
     server_settings *settings;
+
+    uint64_t initial_ts;
 } server;
 
 #endif

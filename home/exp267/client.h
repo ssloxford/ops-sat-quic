@@ -10,6 +10,8 @@ typedef struct _client_settings {
     int debug;
 
     int input_fd;
+
+    int timing;
 } client_settings;
 
 typedef struct _client {
@@ -35,6 +37,9 @@ typedef struct _client {
     WOLFSSL_CTX* ctx;
 
     client_settings *settings;
+
+    // Only used if settings->timing is set. Allows us to use the clock from utils and take deltas
+    uint64_t initial_ts;
 } client;
 
 #endif
