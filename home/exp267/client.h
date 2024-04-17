@@ -27,7 +27,7 @@ typedef struct _client {
     // A linked list of all data queued to be sent or inflight (send but not acknowledged)
     // Inflight_head and send_head are dummy header nodes for their respective queues
     data_node *inflight_head, *inflight_tail, *send_tail;
-    uint64_t sent_offset;
+    uint64_t stream_offset;
 
     // Structures to store the local and remote addresses of the path being used
     ngtcp2_sockaddr_union localsock, remotesock;

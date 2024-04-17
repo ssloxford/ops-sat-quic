@@ -34,7 +34,7 @@ typedef struct _server {
     // Inflight queue: (inflight_head, inflight_tail]
     // Send queue: (inflight_tail, send_tail]
     data_node *inflight_head, *inflight_tail, *send_tail;
-    uint64_t sent_offset;
+    uint64_t stream_offset;
 
     struct sockaddr_storage localsock;
     socklen_t locallen;

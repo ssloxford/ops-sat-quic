@@ -285,11 +285,11 @@ static int client_init(client *c, char* server_ip, char *server_port) {
     c->ref.user_data = c;
 
     c->stream_id = -1;
+    c->stream_offset = 0;
 
     // inflight_head is a dummy node
     c->send_tail = c->inflight_tail = c->inflight_head = malloc(sizeof(data_node));
     c->send_tail->next = NULL;
-    c->sent_offset = 0;
 
     c->locallen = sizeof(c->localsock);
     c->remotelen = sizeof(c->remotesock);
@@ -318,7 +318,7 @@ static int client_init(client *c, char* server_ip, char *server_port) {
 static int client_write_step(client *c) {
     int rv;
 
-    rv = write_step(c->conn, c->fd, c->inflight_tail, &c->sent_offset);
+    rv = write_step(c->conn, c->fd, c->inflight_tail);
 
     if (rv < 0) {
         return rv;
@@ -606,7 +606,9 @@ int main(int argc, char **argv){
                     payloadlen++;
                 }
 
-                rv = enqueue_message(payload, payloadlen, c.stream_id, c.sent_offset, 0, c.send_tail);
+                rv = enqueue_message(payload, payloadlen, c.stream_id, c.stream_offset, 0, c.send_tail);
+
+                c.stream_offset += payloadlen;
 
                 if (rv < 0) {
                     return rv;
@@ -634,7 +636,9 @@ int main(int argc, char **argv){
 
                 remaining_rand_data -= payloadlen;
 
-                rv = enqueue_message(payload, payloadlen, c.stream_id, c.sent_offset, remaining_rand_data == 0, c.send_tail);
+                rv = enqueue_message(payload, payloadlen, c.stream_id, c.stream_offset, remaining_rand_data == 0, c.send_tail);
+
+                c.stream_offset += payloadlen;
 
                 if (rv < 0) {
                     return rv;

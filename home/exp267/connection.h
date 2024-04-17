@@ -33,7 +33,7 @@ int send_packet(int fd, uint8_t* pkt, size_t pktlen, const struct sockaddr* dest
 
 ssize_t read_message(int fd, uint8_t *buf, size_t buflen, struct sockaddr *remote_addr, socklen_t *remote_addrlen);
 
-ssize_t write_step(ngtcp2_conn *conn, int fd, const data_node *send_queue, size_t *stream_offset);
+ssize_t write_step(ngtcp2_conn *conn, int fd, const data_node *send_queue);
 
 ssize_t send_nonstream_packets(ngtcp2_conn *conn, int fd, uint8_t *buf, size_t buflen, int limit);
 

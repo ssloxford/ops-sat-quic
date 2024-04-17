@@ -38,11 +38,13 @@ ssize_t prepare_packet(ngtcp2_conn *conn, int64_t stream_id, uint8_t* buf, size_
         return bytes_written;
     }
 
+    ngtcp2_conn_update_pkt_tx_time(conn, ts);
+
     if (bytes_written == 0) {
         // fprintf(stderr, "Warning: Buffer to prepare packet into too small or packet is congestion limited\n");
         return ERROR_NO_NEW_MESSAGE;
     }
-    
+
     return bytes_written;
 }
 
@@ -82,7 +84,7 @@ ssize_t read_message(int fd, uint8_t *buf, size_t buflen, struct sockaddr *remot
     return bytes_read;
 }
 
-ssize_t write_step(ngtcp2_conn *conn, int fd, const data_node *send_queue, size_t *stream_offset) {
+ssize_t write_step(ngtcp2_conn *conn, int fd, const data_node *send_queue) {
     // Data and datalen is the data to be written
     // Buf and bufsize is a general use memory allocation (eg. to pass packets to subroutines)
     ssize_t pktlen;
@@ -120,8 +122,6 @@ ssize_t write_step(ngtcp2_conn *conn, int fd, const data_node *send_queue, size_
         }
 
         pkt_to_send->time_sent = timestamp_ms();
-
-        *stream_offset = *stream_offset + stream_framelen;
     }
 
     // If there are any "housekeeping" frames that didn't fit into the above packet, send them now

@@ -93,8 +93,10 @@ static int recv_stream_data_cb(ngtcp2_conn *conn, uint32_t flags, int64_t stream
     }
     
     if (s->settings->reply) {
-        rv = enqueue_message(data, datalen, s->stream_id, s->sent_offset, 0, s->send_tail);
-      
+        rv = enqueue_message(data, datalen, s->stream_id, s->stream_offset, 0, s->send_tail);
+        
+        s->stream_offset += datalen;
+        
         if (rv < 0) {
             return NGTCP2_ERR_CALLBACK_FAILURE;
         }
@@ -255,7 +257,7 @@ static int server_init(server *s, char *server_port) {
     // inflight_head is a dummy node. Both lists start empty
     s->send_tail = s->inflight_tail = s->inflight_head = malloc(sizeof(data_node));
     s->send_tail->next = NULL;
-    s->sent_offset = 0;
+    s->stream_offset = 0;
 
     s->locallen = sizeof(s->localsock);
 
@@ -442,7 +444,7 @@ static int server_write_step(server *s) {
     // inflight_tail is also send_head
 
     // TODO - Implement taking and providing fin bit
-    rv = write_step(s->conn, s->fd, s->inflight_tail, &s->sent_offset);
+    rv = write_step(s->conn, s->fd, s->inflight_tail);
 
     if (rv < 0) {
         return rv;
