@@ -28,13 +28,8 @@ typedef struct _server {
     int fd;
 
     int connected;
-    uint64_t stream_id;
-
-    // A linked list of all data queued to be sent or inflight (sent but not acknowledged)
-    // Inflight queue: (inflight_head, inflight_tail]
-    // Send queue: (inflight_tail, send_tail]
-    data_node *inflight_head, *inflight_tail, *send_tail;
-    uint64_t stream_offset;
+    
+    stream *streams;
 
     struct sockaddr_storage localsock;
     socklen_t locallen;

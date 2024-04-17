@@ -96,7 +96,13 @@ ssize_t write_step(ngtcp2_conn *conn, int fd, const data_node *send_queue) {
 
     ssize_t rv;
 
-    data_node *pkt_to_send = send_queue->next;
+    data_node *pkt_to_send;
+    
+    if (send_queue == NULL) {
+        pkt_to_send = NULL;
+    } else {
+        pkt_to_send = send_queue->next;
+    }
 
     const ngtcp2_path *path = ngtcp2_conn_get_path(conn);
 
@@ -220,7 +226,7 @@ int handle_timeout(ngtcp2_conn *conn, int fd) {
     return 0;
 }
 
-int enqueue_message(const uint8_t *payload, size_t payloadlen, uint64_t stream_id, uint64_t offset, int fin, data_node *queue_tail) {
+int enqueue_message(const uint8_t *payload, size_t payloadlen, int fin, stream *stream) {
     uint8_t *pkt_data = malloc(payloadlen);
 
     if (pkt_data == NULL) {
@@ -241,18 +247,20 @@ int enqueue_message(const uint8_t *payload, size_t payloadlen, uint64_t stream_i
     queue_node->payload = pkt_data;
     queue_node->payloadlen = payloadlen;
 
-    queue_node->stream_id = stream_id;
+    queue_node->stream_id = stream->stream_id;
 
-    queue_node->offset = offset;
+    queue_node->offset = stream->stream_offset;
+
+    stream->stream_offset += payloadlen;
 
     queue_node->fin_bit = fin;
 
     // Join the values after queue_tail onto the created node
     // For a true tail node, this will be NULL
-    queue_node->next = queue_tail->next;
+    queue_node->next = stream->send_tail->next;
 
     // Add the new node after *queue_tail
-    queue_tail->next = queue_node;
+    stream->send_tail->next = queue_node;
 
     return 0;
 }

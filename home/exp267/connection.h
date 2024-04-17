@@ -25,6 +25,16 @@ typedef struct _data_node {
     struct _data_node *next;
 } data_node;
 
+typedef struct _stream {
+    int64_t stream_id;
+
+    uint64_t stream_offset;
+
+    data_node *inflight_head, *inflight_tail, *send_tail;
+
+    struct _stream *next;
+} stream;
+
 ssize_t prepare_packet(ngtcp2_conn *conn, int64_t stream_id, uint8_t* buf, size_t buflen, ngtcp2_ssize *wdatalen, struct iovec *iov, int fin);
 
 ssize_t prepare_nonstream_packet(ngtcp2_conn *conn, uint8_t *buf, size_t buflen);
@@ -41,6 +51,6 @@ int get_timeout(ngtcp2_conn *conn);
 
 int handle_timeout(ngtcp2_conn *conn, int fd);
 
-int enqueue_message(const uint8_t *payload, size_t payloadlen, uint64_t stream_id, uint64_t offset, int fin, data_node *queue_tail);
+int enqueue_message(const uint8_t *payload, size_t payloadlen, int fin, stream *stream);
 
 #endif

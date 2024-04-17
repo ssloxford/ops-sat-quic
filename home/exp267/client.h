@@ -21,13 +21,8 @@ typedef struct _client {
     // The fd of the UDP socket being used
     int fd;
 
-    // TODO - Support multiple stream ids 
-    int64_t stream_id;
-
-    // A linked list of all data queued to be sent or inflight (send but not acknowledged)
-    // Inflight_head and send_head are dummy header nodes for their respective queues
-    data_node *inflight_head, *inflight_tail, *send_tail;
-    uint64_t stream_offset;
+    // Linked list of open streams, each with their own ack/send queue.
+    stream *streams;
 
     // Structures to store the local and remote addresses of the path being used
     ngtcp2_sockaddr_union localsock, remotesock;

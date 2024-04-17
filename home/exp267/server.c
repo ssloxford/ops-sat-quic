@@ -14,72 +14,23 @@
 #include "utils.h"
 #include "errors.h"
 #include "connection.h"
+#include "callbacks.h"
 
-static int acked_stream_data_offset_cb(ngtcp2_conn *conn, int64_t stream_id, uint64_t offset, uint64_t datalen, void *user_data, void *stream_data) {
+static int server_acked_stream_data_offset_cb(ngtcp2_conn *conn, int64_t stream_id, uint64_t offset, uint64_t datalen, void *user_data, void *stream_data) {
     // The remote has acknowledged all data in the range [offset, offset+datalen)    
     server *s = user_data;
+    stream *stream_n = stream_data;
 
-    uint64_t delta;
-
-    // Start on the dummy header
-    data_node *prev_ptr = s->inflight_head;
-    
-    // Must update using prev_ptr->next as ptr may have been deallocated
-    for (data_node *ptr = prev_ptr->next; prev_ptr != s->inflight_tail; ptr = prev_ptr->next) {
-        if (ptr->stream_id == stream_id && ptr->offset >= offset && ptr->offset < (offset + datalen)) {
-            // This frame has been acked in this call. We can deallocate it
-            // Update the pointers
-            prev_ptr->next = ptr->next;
-
-            if (s->settings->timing) {
-                delta = timestamp_ms() - ptr->time_sent;
-
-                printf("Pacekt at offset %lu acknowledged. Total time inflight: %lu ms\n", offset, delta);
-            }
-
-            free(ptr->payload);
-            free(ptr);
-
-            // If deleting the last element of the list, make the tail pointer accurate
-            if (ptr == s->inflight_tail) {
-                // Deleting the last element of the queue. Must update the pointers to track
-                s->inflight_tail = prev_ptr;
-                if (s->send_tail == ptr) {
-                    // We're also deleting the send_tail, meaning the send list must have been empty. Therefore, we must update the tail pointer to track the send head
-                    s->send_tail = s->inflight_tail;
-                }
-            }
-        } else {
-            // Keep tracking the previous pointer
-            prev_ptr = ptr;
-        }
-    }
-
-    return 0;
+    return acked_stream_data_offset_cb(conn, offset, datalen, stream_n, s->settings->timing);
 }
 
-static int extend_max_local_streams_uni_cb(ngtcp2_conn *conn, uint64_t max_streams, void *user_data) {
-    int64_t stream_id;
-
+static int server_extend_max_local_streams_uni_cb(ngtcp2_conn *conn, uint64_t max_streams, void *user_data) {
     server *s = user_data;
 
-    // If not replying data, no need to open a new stream. Saves a frame in the next packet
-    if (!s->settings->reply) {
-        return 0;
-    }
-
-    int rv = ngtcp2_conn_open_uni_stream(conn, &stream_id, NULL);
-    if (rv < 0) {
-        fprintf(stderr, "Failed to open new uni stream: %s\n", ngtcp2_strerror(rv));
-        return NGTCP2_ERR_CALLBACK_FAILURE;
-    }
-
-    s->stream_id = stream_id;
-
-    return 0;
+    return extend_max_local_streams_uni_cb(conn, s->streams);
 }
 
-static int recv_stream_data_cb(ngtcp2_conn *conn, uint32_t flags, int64_t stream_id, uint64_t offset, const uint8_t *data, size_t datalen, void *user_data, void *stream_user_data) {
+static int server_recv_stream_data_cb(ngtcp2_conn *conn, uint32_t flags, int64_t stream_id, uint64_t offset, const uint8_t *data, size_t datalen, void *user_data, void *stream_user_data) {
     int rv;
 
     server *s = user_data;
@@ -93,32 +44,41 @@ static int recv_stream_data_cb(ngtcp2_conn *conn, uint32_t flags, int64_t stream
     }
     
     if (s->settings->reply) {
-        rv = enqueue_message(data, datalen, s->stream_id, s->stream_offset, 0, s->send_tail);
-        
-        s->stream_offset += datalen;
+        rv = enqueue_message(data, datalen, 0, s->streams->next);
         
         if (rv < 0) {
             return NGTCP2_ERR_CALLBACK_FAILURE;
         }
-
-        // Update the tail pointer to the newly added value
-        s->send_tail = s->send_tail->next;
     }
 
     return 0;
 }
 
-
-static int handshake_completed_cb(ngtcp2_conn *conn, void *user_data) {
+static int server_handshake_completed_cb(ngtcp2_conn *conn, void *user_data) {
     server *s = user_data;
 
     if (s->settings->timing) {
-        uint64_t delta = timestamp_ms() - s->initial_ts;
-
-        printf("Handshake completed: %lu ms\n", delta);
+        handshake_completed_cb(s->initial_ts);
     }
 
     return 0;
+}
+
+static int server_stream_close_cb(ngtcp2_conn *conn, uint32_t flags, int64_t stream_id, uint64_t app_error_code, void *user_data, void *stream_data) {
+    server *s = user_data;
+
+    stream *stream_n = stream_data;
+
+    stream *prev_ptr = s->streams;
+
+    for (stream *ptr = prev_ptr->next; ptr != stream_n; ptr = prev_ptr->next) {
+        prev_ptr = ptr;
+    }
+
+    // Jump pointers over the stream being removed
+    prev_ptr->next = stream_n->next;
+
+    return stream_close_cb(stream_n, s->streams);
 }
 
 static int server_wolfssl_new(server *s) {
@@ -167,19 +127,19 @@ static int server_settings_init(ngtcp2_callbacks *callbacks, ngtcp2_settings *se
         NULL,
         ngtcp2_crypto_recv_client_initial_cb, /* recv_client_initial */
         ngtcp2_crypto_recv_crypto_data_cb,
-        handshake_completed_cb, /* handshake_completed */
+        server_handshake_completed_cb, /* handshake_completed */
         NULL, /* recv_version_negotiation */
         ngtcp2_crypto_encrypt_cb,
         ngtcp2_crypto_decrypt_cb,
         ngtcp2_crypto_hp_mask_cb,
-        recv_stream_data_cb, /* recv_stream_data */
-        acked_stream_data_offset_cb, /* acked_stream_data_offset */
+        server_recv_stream_data_cb, /* recv_stream_data */
+        server_acked_stream_data_offset_cb, /* acked_stream_data_offset */
         NULL, /* stream_open */
         NULL, /* stream_close */
         NULL, /* recv_stateless_reset */
         NULL, /* recv_retry */
         NULL, /* extend_max_local_streams_bidi */
-        extend_max_local_streams_uni_cb, /* extend_max_local_streams_uni */
+        server_extend_max_local_streams_uni_cb, /* extend_max_local_streams_uni */
         rand_cb, // Not provided by library
         get_new_connection_id_cb, // Not provided by library
         NULL, /* remove_connection_id */
@@ -252,12 +212,13 @@ static int server_init(server *s, char *server_port) {
 
     // Server is not connected. No open stream
     s->connected = 0;
-    s->stream_id = -1;
+    
+    s->streams = malloc(sizeof(stream));
+    if (s->streams == NULL) {
+        return ERROR_OUT_OF_MEMORY;
+    }
 
-    // inflight_head is a dummy node. Both lists start empty
-    s->send_tail = s->inflight_tail = s->inflight_head = malloc(sizeof(data_node));
-    s->send_tail->next = NULL;
-    s->stream_offset = 0;
+    s->streams->next = NULL;
 
     s->locallen = sizeof(s->localsock);
 
@@ -279,7 +240,9 @@ static int server_init(server *s, char *server_port) {
 
 static int server_close_connection(server *s) {
     s->connected = 0;
-    s->stream_id = -1;
+
+    free(s->streams->next);
+    s->streams->next = NULL;
 
     ngtcp2_conn_del(s->conn);
 
@@ -441,19 +404,25 @@ static int server_read_step(server *s) {
 
 static int server_write_step(server *s) {
     int rv;
-    // inflight_tail is also send_head
 
-    // TODO - Implement taking and providing fin bit
-    rv = write_step(s->conn, s->fd, s->inflight_tail);
+    if (s->streams->next == NULL) {
+        rv = write_step(s->conn, s->fd, NULL);
 
-    if (rv < 0) {
-        return rv;
-    }
+        if (rv < 0) {
+            return rv;
+        }
+    } else {
+        rv = write_step(s->conn, s->fd, s->streams->next->inflight_tail);
 
-    if (s->inflight_tail != s->send_tail) {
-        // Send queue is non-empty, so the head was sent
-        // Steps the head of the send queue onto the tail of the inflight queue
-        s->inflight_tail = s->inflight_tail->next;
+        if (rv < 0) {
+            return rv;
+        }
+
+        // Stream data has been written. Update the in flight list
+        if (s->streams->next->inflight_tail != s->streams->next->send_tail) {
+            // Send queue is non-empty, so the head was sent
+            s->streams->next->inflight_tail = s->streams->next->inflight_tail->next;
+        }
     }
 
     return 0;
