@@ -288,7 +288,7 @@ static int client_write_step(client *c) {
         }
 
         // Stream data has been written. Update the in flight list
-        if (c->streams->next->inflight_tail != c->streams->next->send_tail) {
+        if (rv > 0) {
             // Send queue is non-empty, so the head was sent
             c->streams->next->inflight_tail = c->streams->next->inflight_tail->next;
         }

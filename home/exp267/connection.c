@@ -138,7 +138,11 @@ ssize_t write_step(ngtcp2_conn *conn, int fd, const data_node *send_queue) {
         return rv;
     }
 
-    return 0;
+    if (pkt_to_send == NULL) {
+        return 0;
+    }
+
+    return 1;
 }
 
 // Processes preparing and sending all available acknowledge packets, handshake, etc.
