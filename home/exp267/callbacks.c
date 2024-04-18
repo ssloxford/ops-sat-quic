@@ -2,6 +2,7 @@
 #include "utils.h"
 
 #include <stdio.h>
+#include <inttypes.h>
 
 int acked_stream_data_offset_cb(ngtcp2_conn *conn, uint64_t offset, uint64_t datalen, stream *stream, int timing) {
     // The remote has acknowledged all data in the range [offset, offset+datalen)
@@ -22,7 +23,7 @@ int acked_stream_data_offset_cb(ngtcp2_conn *conn, uint64_t offset, uint64_t dat
                 // Report total time in flight of this packet
                 delta = timestamp_ms() - ptr->time_sent;
 
-                printf("Packet at offset %lu acknowledged. Total time inflight: %lu ms\n", offset, delta);
+                printf("Packet at offset %"PRIu64" acknowledged. Total time inflight: %"PRIu64" ms\n", offset, delta);
             }
 
             free(ptr->payload);
@@ -110,7 +111,7 @@ int stream_close_cb(stream *stream_n, stream *stream_list) {
 int handshake_completed_cb(uint64_t initial_ts) {
     uint64_t delta = timestamp_ms() - initial_ts;
 
-    printf("Handshake completed: %lu ms\n", delta);
+    printf("Handshake completed: %"PRIu64" ms\n", delta);
 
     return 0;
 }

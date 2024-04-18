@@ -12,7 +12,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#define TCP_PORT "11112"
+#define TCP_DEFAULT_PORT "11112"
 
 // TODO - Timeout on these?
 typedef struct _incomplete_packet {
@@ -275,9 +275,10 @@ static int handle_udp_packet(int tcp_fd, uint8_t *buf, size_t buflen, size_t pkt
 
 void print_helpstring() {
     printf("-h: Print help string\n");
-    printf("-t: Run TCP connection in client mode\n");
     printf("-p [port]: Set UDP port\n");
+    printf("-q [port]: Set TCP port\n");
     printf("-u: Run UDP connection in client mode\n");
+    printf("-t: Run TCP connection in client mode\n");
 }
 
 void deinit(int udp_fd, int tcp_fd) {
@@ -312,11 +313,11 @@ int main(int argc, char **argv) {
 
     struct pollfd polls[2];
 
-    char *udp_target_port;
+    char *udp_target_port, *tcp_target_port = TCP_DEFAULT_PORT;
     int tcp_client = 0, udp_client = 0, udp_port_set = 0, udp_remote_set = 0;
 
     // Process option flags
-    while ((opt = getopt(argc, argv, "htp:u")) != -1) {
+    while ((opt = getopt(argc, argv, "htp:q:u")) != -1) {
         switch (opt){
             case 'h':
                 print_helpstring();
@@ -328,6 +329,9 @@ int main(int argc, char **argv) {
             case 'p':
                 udp_target_port = optarg;
                 udp_port_set = 1;
+                break;
+            case 'q':
+                tcp_target_port = optarg;
                 break;
             case 'u':
                 udp_client = 1;
@@ -361,12 +365,12 @@ int main(int argc, char **argv) {
     // Init the TCP connection
     if (tcp_client) {
         // Have it initiate tcp connection
-        rv = connect_tcp_socket(&tcp_fd, TCP_PORT, (struct sockaddr*) &tcp_remote, &tcp_remotelen);
+        rv = connect_tcp_socket(&tcp_fd, tcp_target_port, (struct sockaddr*) &tcp_remote, &tcp_remotelen);
 
     } else {
         // Opens a socket to listen for TCP connections on and binds it to TCP port
         // Must then listen on that port and accept 
-        rv = bind_and_accept_tcp_socket(&tcp_fd, TCP_PORT, (struct sockaddr*) &tcp_remote, &tcp_remotelen);
+        rv = bind_and_accept_tcp_socket(&tcp_fd, tcp_target_port, (struct sockaddr*) &tcp_remote, &tcp_remotelen);
     }
     
     if (rv < 0) {
