@@ -68,7 +68,7 @@ void debug_log(void *user_data, const char *format, ...) {
     fprintf(stdout, "\n");
 }
 
-int resolve_and_process(in_addr_t target_host, target_port, int protocol, int is_server, struct sockaddr *localsock, socklen_t *localsocklen, struct sockaddr *remotesock, socklen_t *remotesocklen) {
+int resolve_and_process(in_addr_t target_host, int target_port, int protocol, int is_server, struct sockaddr *localsock, socklen_t *localsocklen, struct sockaddr *remotesock, socklen_t *remotesocklen) {
     int rv, fd;
 
     int sock_type;
