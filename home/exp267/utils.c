@@ -4,13 +4,15 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdarg.h>
-#include <sys/socket.h>
 #include <netdb.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <time.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include "utils.h"
 #include "errors.h"
@@ -66,88 +68,103 @@ void debug_log(void *user_data, const char *format, ...) {
     fprintf(stdout, "\n");
 }
 
-// Function code taken mostly from spaceQUIC
-int resolve_and_process(int *save_fd, const char *target_host, const char* target_port, struct addrinfo *hints, int is_server, struct sockaddr *localsock, socklen_t *localsocklen, struct sockaddr *remotesock, socklen_t *remotesocklen) {
-    struct addrinfo *result, *rp;
+int resolve_and_process(in_addr_t target_host, int target_port, int protocol, int is_server, struct sockaddr *localsock, socklen_t *localsocklen, struct sockaddr *remotesock, socklen_t *remotesocklen) {
     int rv, fd;
 
-    rv = getaddrinfo(target_host, target_port, hints, &result);
-    if (rv < 0) {
-        fprintf(stderr, "Failed to get address info for requested endpoint: %s\n", gai_strerror(rv));
-        return ERROR_HOST_LOOKUP;
+    int sock_type;
+
+    struct sockaddr_in sockaddrin;
+    socklen_t sockaddrinlen = sizeof(sockaddrin);
+
+    switch (protocol) {
+        case IPPROTO_TCP:
+            sock_type = SOCK_STREAM;
+            break;
+        case IPPROTO_UDP:
+            sock_type = SOCK_DGRAM;
+            break;
+        default:
+            // Protocol provided was meant to be one of TCP or UDP
+            return -1;
+            // TODO - Macro this error code
     }
 
-    // Result is the head of a linked list, with nodes of type addrinfo
-    for (rp = result; rp != NULL; rp = rp->ai_next) {
-        // Attempt to open a file descriptor for current address info in results
-        fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-        if (fd == -1)
-            // If can't open a socket for it, move on
-            continue;
+    // Build the sockaddrin struct to be passed to bind/connect
+    sockaddrin.sin_family = AF_INET;
+    // Argument to integer. Then host to network (long)
+    sockaddrin.sin_port = htons(target_port);
+    // Converts the IP written in target_host into correct type for the sockaddrin and saves into the struct
+    sockaddrin.sin_addr.s_addr = target_host;
 
-        // Attempt to connect the created file descriptor to the address we've looked up
-        // && short circuits and connect is not evaluated if is_server
-        if (!is_server && connect(fd, rp->ai_addr, rp->ai_addrlen) == 0) {
-            // Assign the path's remote addrlen. Must copy the value into the remote.addr pointer since rp will be deallocated
-            *remotesocklen = rp->ai_addrlen;
-            memcpy(remotesock, rp->ai_addr, rp->ai_addrlen);
+    fd = socket(AF_INET, sock_type, protocol);
 
-            if (localsock != NULL) {
-                // Set the local path of the client
-                if (getsockname(fd, localsock, localsocklen) == -1)
-                    return ERROR_GET_SOCKNAME;
-            }
+    if (fd == -1) {
+        // TODO - Macro this error code
+        return -1;
+    }
 
-            // Exit the loop when the first successful connection is made
-            break;
-        } else if (is_server && bind(fd, rp->ai_addr, rp->ai_addrlen) == 0) {
-            if (localsock != NULL) {
-                *localsocklen = rp->ai_addrlen;
-                memcpy(localsock, rp->ai_addr, rp->ai_addrlen);
-            }
+    if (is_server) {
+        // Attempt to bind the socket to provided IP and port
+        rv = bind(fd, (struct sockaddr*) &sockaddrin, sockaddrinlen);
 
-            break;
+        if (rv == -1) {
+            fprintf(stderr, "Failed to bind socket to address: %s\n", strerror(errno));
+            return -1;
         }
 
-        // If the connection was not made, close the fd and keep looking
-        close(fd);
+        // Update the provided socket pointer with the bound socket 
+        if (localsock != NULL) {
+            *localsocklen = sockaddrinlen;
+            memcpy(localsock, &sockaddrin, sockaddrinlen);
+        }
+    } else {
+        rv = connect(fd, (struct sockaddr*) &sockaddrin, sockaddrinlen);
+
+        if (rv == -1) {
+            fprintf(stderr, "Failed to connect socket to address: %s\n", strerror(errno));
+            return -1;
+        }
+
+        if (remotesock != NULL) {
+            *remotesocklen = sockaddrinlen;
+            memcpy(remotesock, &sockaddrin, sockaddrinlen);
+        }
+
+        if (localsock != NULL) {
+            // Requires *localsocklen to be accurate to the length of localsock before the call
+            rv = getsockname(fd, localsock, localsocklen);
+
+            if (rv == -1) {
+                fprintf(stderr, "Failed to get local address of connected fd: %s\n", strerror(errno));
+            }
+        }
     }
 
-    // Must manually deallocate the results from the lookup
-    freeaddrinfo(result);
+    return fd;
+}
 
-    // If the loop finished by getting to the end, rather than with a successful connection, return -1
-    if (rp == NULL) {
-        fprintf(stderr, "Could not proccess any resolved addresses\n");
-        return ERROR_COULD_NOT_OPEN_CONNECTION_FD;
+int bind_udp_socket(int *fd, const char *server_port) {
+    int rv;
+
+    rv = resolve_and_process(INADDR_ANY, atoi(server_port), IPPROTO_UDP, 1, NULL, NULL, NULL, NULL);
+
+    if (rv  < 0) {
+        return rv;
     }
 
-    // Save the fd of the open socket connected to the endpoint
-    *save_fd = fd;
+    *fd = rv;
     return 0;
 }
 
-int bind_udp_socket(int *fd, char *server_port) {
-    struct addrinfo hints;
+int connect_udp_socket(int *fd, const char *server_ip, const char *server_port, struct sockaddr *remoteaddr, socklen_t *remoteaddrlen) {
+    int rv;
+    
+    rv = resolve_and_process(inet_addr(server_ip), atoi(server_port), IPPROTO_UDP, 0, NULL, NULL, remoteaddr, remoteaddrlen);
 
-    memset(&hints, 0, sizeof(hints));
+    if (rv < 0) {
+        return rv;
+    }
 
-    hints.ai_family = AF_INET; // IPv4 addresses
-    hints.ai_protocol = IPPROTO_UDP; // UDP sockets only
-    hints.ai_flags = AI_PASSIVE | AI_NUMERICSERV; // Port is provided as a number rather than string eg. "ssh"
-
-    return resolve_and_process(fd, INADDR_ANY, server_port, &hints, 1, NULL, NULL, NULL, NULL);
-}
-
-int connect_udp_socket(int *fd, char *server_ip, char *server_port, struct sockaddr *remoteaddr, socklen_t *remoteaddrlen) {
-    struct addrinfo hints;
-
-    memset(&hints, 0, sizeof(hints));
-
-    hints.ai_family = AF_INET;
-    hints.ai_protocol = IPPROTO_UDP;
-    hints.ai_flags = AI_NUMERICSERV;
-
-    // Opens UDP socket and saves the remote address into remoteaddr
-    return resolve_and_process(fd, server_ip, server_port, &hints, 0, NULL, NULL, remoteaddr, remoteaddrlen);
+    *fd = rv;
+    return 0;
 }

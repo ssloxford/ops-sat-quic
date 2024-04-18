@@ -93,23 +93,27 @@ static int client_wolfssl_init(client *c) {
 }
 
 static int client_resolve_and_connect(client *c, const char *target_host, const char *target_port) {
-    struct addrinfo hints;
     int rv;
 
-    // Documentation says that unused fields in hints (eg. next) must be 0/null
-    memset(&hints, 0, sizeof(hints));
+    struct in_addr inaddr;
 
-    // Look for available IPv4 UDP endpoints
-    hints.ai_family = AF_INET;
-    hints.ai_protocol = IPPROTO_UDP;
+    rv = inet_aton(target_host, &inaddr);
+
+    // 0 for error is correct. https://linux.die.net/man/3/inet_aton
+    if (rv == 0) {
+        // Address provided is invalid
+        return -1;
+    }
 
     // Resolves target host and port, opens connection to it,
     // and updates variables fd, and local and remote sockaddr and socklen in client
-    rv = resolve_and_process(&c->fd, target_host, target_port, &hints, 0, (ngtcp2_sockaddr*) &c->localsock, &c->locallen, (ngtcp2_sockaddr*) &c->remotesock, &c->remotelen);
+    rv = resolve_and_process(inaddr.s_addr, atoi(target_port), IPPROTO_UDP, 0, (struct sockaddr*) &c->localsock, &c->locallen, (struct sockaddr*) &c->remotesock, &c->remotelen);
 
     if (rv < 0) {
         return rv;
     }
+
+    c->fd = rv;
 
     return 0;
 }
@@ -275,13 +279,13 @@ static int client_write_step(client *c) {
     int rv;
 
     if (c->streams->next == NULL) {
-        rv = write_step(c->conn, c->fd, NULL);
+        rv = write_step(c->conn, c->fd, NULL, (struct sockaddr*) &c->remotesock, c->remotelen);
 
         if (rv < 0) {
             return rv;
         }
     } else {
-        rv = write_step(c->conn, c->fd, c->streams->next->inflight_tail);
+        rv = write_step(c->conn, c->fd, c->streams->next->inflight_tail, (struct sockaddr*) &c->remotesock, c->remotelen);
 
         if (rv < 0) {
             return rv;
@@ -354,7 +358,7 @@ static int client_read_step(client *c) {
     }
 
     // Send ACK frames
-    rv = send_nonstream_packets(c->conn, c->fd, buf, sizeof(buf), -1);
+    rv = send_nonstream_packets(c->conn, c->fd, -1, (struct sockaddr*) &c->remotesock, c->remotelen);
 
     if (rv < 0) {
         return rv;
@@ -388,7 +392,7 @@ static int client_close_connection(client *c) {
         return pktlen;
     }
 
-    rv = send_packet(c->fd, buf, pktlen, ps.path.remote.addr, ps.path.remote.addrlen);
+    rv = send_packet(c->fd, buf, pktlen, (struct sockaddr*) &c->remotesock, c->remotelen);
 
     if (rv < 0) {
         return rv;
@@ -512,7 +516,7 @@ int main(int argc, char **argv){
 
             if (rv == 0) {
                 // Timeout occured
-                rv = handle_timeout(c.conn, c.fd);
+                rv = handle_timeout(c.conn, c.fd, (struct sockaddr*) &c.remotesock, c.remotelen);
                 if (rv == ERROR_DROP_CONNECTION) {
                     // TODO - Maybe a printf in to say we idle timed out
                     return 0;
@@ -534,7 +538,7 @@ int main(int argc, char **argv){
 
             if (rv == 0) {
                 // Timeout occured
-                rv = handle_timeout(c.conn, c.fd);
+                rv = handle_timeout(c.conn, c.fd, (struct sockaddr*) &c.remotesock, c.remotelen);
                 if (rv == ERROR_DROP_CONNECTION) {
                     return 0;
                 }

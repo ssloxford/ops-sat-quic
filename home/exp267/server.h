@@ -31,8 +31,8 @@ typedef struct _server {
     
     stream *streams;
 
-    struct sockaddr_storage localsock;
-    socklen_t locallen;
+    struct sockaddr_storage localsock, remotesock;
+    socklen_t locallen, remotelen;
 
     WOLFSSL* ssl;
     WOLFSSL_CTX* ctx;

@@ -2,7 +2,7 @@
 #define CONNECTION_H
 
 #define SERVER_PORT "11111"
-#define DEFAULT_IP "localhost"
+#define DEFAULT_IP "127.0.0.1"
 
 #include <ngtcp2/ngtcp2.h>
 
@@ -43,13 +43,13 @@ int send_packet(int fd, uint8_t* pkt, size_t pktlen, const struct sockaddr* dest
 
 ssize_t read_message(int fd, uint8_t *buf, size_t buflen, struct sockaddr *remote_addr, socklen_t *remote_addrlen);
 
-ssize_t write_step(ngtcp2_conn *conn, int fd, const data_node *send_queue);
+ssize_t write_step(ngtcp2_conn *conn, int fd, const data_node *send_queue, struct sockaddr *remote_addr, socklen_t remote_addrlen);
 
-ssize_t send_nonstream_packets(ngtcp2_conn *conn, int fd, uint8_t *buf, size_t buflen, int limit);
+ssize_t send_nonstream_packets(ngtcp2_conn *conn, int fd, int limit, struct sockaddr *remote_addr, socklen_t remote_addrlen);
 
 int get_timeout(ngtcp2_conn *conn);
 
-int handle_timeout(ngtcp2_conn *conn, int fd);
+int handle_timeout(ngtcp2_conn *conn, int fd, struct sockaddr *remote_addr, socklen_t remote_addrlen);
 
 int enqueue_message(const uint8_t *payload, size_t payloadlen, int fin, stream *stream);
 

@@ -119,6 +119,8 @@ static int server_wolfssl_new(server *s) {
 
     wolfSSL_set_app_data(s->ssl, &s->ref);
     wolfSSL_set_accept_state(s->ssl);
+
+    return 0;
 }
 
 static int server_settings_init(ngtcp2_callbacks *callbacks, ngtcp2_settings *settings, int debug) {
@@ -135,7 +137,7 @@ static int server_settings_init(ngtcp2_callbacks *callbacks, ngtcp2_settings *se
         server_recv_stream_data_cb, /* recv_stream_data */
         server_acked_stream_data_offset_cb, /* acked_stream_data_offset */
         NULL, /* stream_open */
-        NULL, /* stream_close */
+        server_stream_close_cb, /* stream_close */
         NULL, /* recv_stateless_reset */
         NULL, /* recv_retry */
         NULL, /* extend_max_local_streams_bidi */
@@ -177,23 +179,17 @@ static int server_settings_init(ngtcp2_callbacks *callbacks, ngtcp2_settings *se
 }
 
 static int server_resolve_and_bind(server *s, const char *server_port) {
-    struct addrinfo hints;
     int rv;
-
-    // Documentation requires hints to be cleared
-    memset(&hints, 0, sizeof(hints));
-    
-    hints.ai_family = AF_INET;
-    hints.ai_protocol = IPPROTO_UDP;
-    hints.ai_flags = AI_PASSIVE; // Ensures the resulting sockaddr supports binding
 
     // Resolves the local port, opens an fd and binds it to the address,
     // and updates the local sockaddr and socklen in server
-    rv = resolve_and_process(&s->fd, INADDR_ANY, server_port, &hints, 1, (ngtcp2_sockaddr*) &s->localsock, &s->locallen, NULL, NULL);
+    rv = resolve_and_process(INADDR_ANY, atoi(server_port), IPPROTO_UDP, 1, (ngtcp2_sockaddr*) &s->localsock, &s->locallen, NULL, NULL);
 
     if (rv < 0) {
         return rv;
     }
+
+    s->fd = rv;
 
     return 0;
 }
@@ -221,6 +217,7 @@ static int server_init(server *s, char *server_port) {
     s->streams->next = NULL;
 
     s->locallen = sizeof(s->localsock);
+    s->remotelen = sizeof(s->remotesock);
 
     if (s->settings->timing) {
         s->initial_ts = timestamp();
@@ -321,8 +318,6 @@ static int server_accept_connection(server *s, uint8_t *buf, size_t buflen, ngtc
 }
 
 static int server_read_step(server *s) {
-    struct sockaddr_storage remote_addr;
-    socklen_t remote_addrlen = sizeof(remote_addr);
     ngtcp2_version_cid version;
 
     int rv;
@@ -332,7 +327,7 @@ static int server_read_step(server *s) {
     ssize_t pktlen;
 
     for (;;) {
-        pktlen = read_message(s->fd, buf, sizeof(buf), (struct sockaddr*) &remote_addr, &remote_addrlen);
+        pktlen = read_message(s->fd, buf, sizeof(buf), (struct sockaddr*) &s->remotesock, &s->remotelen);
 
         if (pktlen == ERROR_NO_NEW_MESSAGE) {
             return 0;
@@ -361,8 +356,8 @@ static int server_read_step(server *s) {
                 .addrlen = s->locallen,
             },
             .remote = {
-                .addr = (ngtcp2_sockaddr*) &remote_addr,
-                .addrlen = remote_addrlen,
+                .addr = (ngtcp2_sockaddr*) &s->remotesock,
+                .addrlen = s->remotelen,
             }
         };
 
@@ -393,7 +388,7 @@ static int server_read_step(server *s) {
     }
 
     // Send ACK packets
-    rv = send_nonstream_packets(s->conn, s->fd, buf, sizeof(buf), -1);
+    rv = send_nonstream_packets(s->conn, s->fd, -1, (struct sockaddr*) &s->remotesock, s->remotelen);
 
     if (rv < 0) {
         return rv;
@@ -406,13 +401,13 @@ static int server_write_step(server *s) {
     int rv;
 
     if (s->streams->next == NULL) {
-        rv = write_step(s->conn, s->fd, NULL);
+        rv = write_step(s->conn, s->fd, NULL, (struct sockaddr*) &s->remotesock, s->remotelen);
 
         if (rv < 0) {
             return rv;
         }
     } else {
-        rv = write_step(s->conn, s->fd, s->streams->next->inflight_tail);
+        rv = write_step(s->conn, s->fd, s->streams->next->inflight_tail, (struct sockaddr*) &s->remotesock, s->remotelen);
 
         if (rv < 0) {
             return rv;
@@ -523,7 +518,7 @@ int main(int argc, char **argv) {
         }
 
         if (rv == 0) {
-            handle_timeout(s.conn, s.fd);
+            handle_timeout(s.conn, s.fd, (struct sockaddr*) &s.remotesock, s.remotelen);
             continue;
         }
 

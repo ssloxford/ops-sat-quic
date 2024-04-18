@@ -61,7 +61,7 @@ int send_packet(int fd, uint8_t* pkt, size_t pktlen, const struct sockaddr* dest
     // On success rv > 0 is the number of bytes sent
 
     if (rv == -1) {
-        fprintf(stderr, "sendmsg: %s\n", strerror(errno));
+        fprintf(stderr, "sendto: %s\n", strerror(errno));
         return rv;
     }
 
@@ -77,14 +77,14 @@ ssize_t read_message(int fd, uint8_t *buf, size_t buflen, struct sockaddr *remot
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             return ERROR_NO_NEW_MESSAGE;
         }
-        fprintf(stderr, "recvmsg: %s\n", strerror(errno));
+        fprintf(stderr, "recvfrom: %s\n", strerror(errno));
         return bytes_read;
     }
 
     return bytes_read;
 }
 
-ssize_t write_step(ngtcp2_conn *conn, int fd, const data_node *send_queue) {
+ssize_t write_step(ngtcp2_conn *conn, int fd, const data_node *send_queue, struct sockaddr* sockaddr, socklen_t sockaddrlen) {
     // Data and datalen is the data to be written
     // Buf and bufsize is a general use memory allocation (eg. to pass packets to subroutines)
     ssize_t pktlen;
@@ -104,8 +104,6 @@ ssize_t write_step(ngtcp2_conn *conn, int fd, const data_node *send_queue) {
         pkt_to_send = send_queue->next;
     }
 
-    const ngtcp2_path *path = ngtcp2_conn_get_path(conn);
-
     if (pkt_to_send != NULL) {
         // There's something in the send queue
         ngtcp2_ssize stream_framelen;
@@ -121,7 +119,7 @@ ssize_t write_step(ngtcp2_conn *conn, int fd, const data_node *send_queue) {
             return pktlen;
         }
 
-        rv = send_packet(fd, buf, pktlen, path->remote.addr, path->remote.addrlen);
+        rv = send_packet(fd, buf, pktlen, sockaddr, sockaddrlen);
 
         if (rv < 0) {
             return rv;
@@ -132,7 +130,7 @@ ssize_t write_step(ngtcp2_conn *conn, int fd, const data_node *send_queue) {
 
     // If there are any "housekeeping" frames that didn't fit into the above packet, send them now
     // Will likely only send packets if the above code wasn't run. Housekeeping frames are typically small
-    rv = send_nonstream_packets(conn, fd, buf, sizeof(buf), -1);
+    rv = send_nonstream_packets(conn, fd, -1, sockaddr, sockaddrlen);
 
     if (rv < 0) {
         return rv;
@@ -146,15 +144,15 @@ ssize_t write_step(ngtcp2_conn *conn, int fd, const data_node *send_queue) {
 }
 
 // Processes preparing and sending all available acknowledge packets, handshake, etc.
-ssize_t send_nonstream_packets(ngtcp2_conn *conn, int fd, uint8_t *buf, size_t buflen, int limit) {
+ssize_t send_nonstream_packets(ngtcp2_conn *conn, int fd, int limit, struct sockaddr* sockaddr, socklen_t sockaddrlen) {
     ssize_t pktlen;
     int rv;
 
-    const ngtcp2_path *path = ngtcp2_conn_get_path(conn);
+    uint8_t buf[BUF_SIZE];
 
     // Limit less than 0 is treated as no limit
     for (int i = 0; limit < 0 || i < limit; i++) {
-        pktlen = prepare_nonstream_packet(conn, buf, buflen);
+        pktlen = prepare_nonstream_packet(conn, buf, sizeof(buf));
         if (pktlen == ERROR_NO_NEW_MESSAGE) {
             // No more "housekeeping" packets to send. Return 
             return 0;
@@ -164,7 +162,7 @@ ssize_t send_nonstream_packets(ngtcp2_conn *conn, int fd, uint8_t *buf, size_t b
             return pktlen;
         }
 
-        rv = send_packet(fd, buf, pktlen, path->remote.addr, path->remote.addrlen);
+        rv = send_packet(fd, buf, pktlen, sockaddr, sockaddrlen);
 
         if (rv < 0) {
             return rv;
@@ -207,7 +205,7 @@ int get_timeout(ngtcp2_conn *conn) {
     }
 }
 
-int handle_timeout(ngtcp2_conn *conn, int fd) {
+int handle_timeout(ngtcp2_conn *conn, int fd, struct sockaddr *remote_addr, socklen_t remote_addrlen) {
     int rv;
 
     // Docs are incredibly sparse on this
@@ -217,11 +215,9 @@ int handle_timeout(ngtcp2_conn *conn, int fd) {
     if (rv == NGTCP2_ERR_IDLE_CLOSE) {
         return ERROR_DROP_CONNECTION;
     }
-
-    uint8_t buf[BUF_SIZE];
-
+    
     // Send a single non-stream packet
-    rv = send_nonstream_packets(conn, fd, buf, sizeof(buf), 1);
+    rv = send_nonstream_packets(conn, fd, 1, remote_addr, remote_addrlen);
 
     if (rv < 0) {
         return rv;
