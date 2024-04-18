@@ -68,7 +68,7 @@ void debug_log(void *user_data, const char *format, ...) {
     fprintf(stdout, "\n");
 }
 
-int resolve_and_process(in_addr_t target_host, int target_port, int protocol, int is_server, struct sockaddr *localsock, socklen_t *localsocklen, struct sockaddr *remotesock, socklen_t *remotesocklen) {
+int resolve_and_process(in_addr_t target_host, target_port, int protocol, int is_server, struct sockaddr *localsock, socklen_t *localsocklen, struct sockaddr *remotesock, socklen_t *remotesocklen) {
     int rv, fd;
 
     int sock_type;
@@ -91,7 +91,7 @@ int resolve_and_process(in_addr_t target_host, int target_port, int protocol, in
 
     // Build the sockaddrin struct to be passed to bind/connect
     sockaddrin.sin_family = AF_INET;
-    // Argument to integer. Then host to network (long)
+    // Argument to integer. Then host to network
     sockaddrin.sin_port = htons(target_port);
     // Converts the IP written in target_host into correct type for the sockaddrin and saves into the struct
     sockaddrin.sin_addr.s_addr = target_host;
