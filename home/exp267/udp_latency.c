@@ -150,7 +150,7 @@ int main(int argc, char **argv) {
     if (left_is_server) {
         rv = bind_udp_socket(&left_fd, left_port);
     } else {
-        rv = connect_udp_socket(&left_fd, "localhost", left_port, (struct sockaddr*) &left_remote, &left_remotelen);
+        rv = connect_udp_socket(&left_fd, "127.0.0.1", left_port, (struct sockaddr*) &left_remote, &left_remotelen);
         left_addr_set = 1;
     }
 
@@ -163,7 +163,7 @@ int main(int argc, char **argv) {
     if (right_is_server) {
         rv = bind_udp_socket(&right_fd, right_port);
     } else {
-        rv = connect_udp_socket(&right_fd, "localhost", right_port, (struct sockaddr*) &right_remote, &right_remotelen);
+        rv = connect_udp_socket(&right_fd, "127.0.0.1", right_port, (struct sockaddr*) &right_remote, &right_remotelen);
         right_addr_set = 1;
     }
 

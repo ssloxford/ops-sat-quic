@@ -20,7 +20,7 @@ int main(int argc, char** argv) {
     socklen_t remoteaddrlen = sizeof(remoteaddr);
 
     // Accept target port in cmd and connect to it
-    rv = connect_udp_socket(&fd, "localhost", argv[1], (struct sockaddr*) &remoteaddr, &remoteaddrlen);
+    rv = connect_udp_socket(&fd, "127.0.0.1", argv[1], (struct sockaddr*) &remoteaddr, &remoteaddrlen);
 
     if (rv < 0) {
         return rv;
