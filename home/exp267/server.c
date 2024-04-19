@@ -443,7 +443,7 @@ int main(int argc, char **argv) {
     server s;
 
     int rv;
-    char opt;
+    int8_t opt;
 
     char *server_port = SERVER_PORT;
 

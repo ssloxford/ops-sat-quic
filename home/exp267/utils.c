@@ -39,7 +39,7 @@ void rand_init() {
 }
 
 int rand_bytes(uint8_t* dest, size_t destlen) {
-    int bytes_this_loop;
+    unsigned int bytes_this_loop;
     int rand_num;
 
     for (size_t i = 0; i < destlen; i += bytes_this_loop) {

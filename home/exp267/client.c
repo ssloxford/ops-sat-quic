@@ -266,6 +266,10 @@ static int client_init(client *c, char* server_ip, char *server_port) {
         return rv;
     }
 
+    if (c->settings->debug) {
+        printf("Successfully initialised wolfSSL\n");
+    }
+
     rv = client_ngtcp2_init(c, server_ip, server_port);
     if (rv < 0) {
         fprintf(stderr, "Failed to initialise ngtcp2 connection: %s\n", ngtcp2_strerror(rv));
@@ -277,6 +281,8 @@ static int client_init(client *c, char* server_ip, char *server_port) {
 
 static int client_write_step(client *c) {
     int rv;
+
+    if (c->settings->debug) printf("Starting write step\n");
 
     if (c->streams->next == NULL) {
         rv = write_step(c->conn, c->fd, NULL, (struct sockaddr*) &c->remotesock, c->remotelen);
@@ -311,6 +317,8 @@ static int client_read_step(client *c) {
     int rv;
 
     ssize_t pktlen;
+
+    if (c->settings->debug) printf("Starting read step\n");
 
     for (;;) {
         pktlen = read_message(c->fd, buf, sizeof(buf), (struct sockaddr*) &remote_addr, &remote_addrlen);
@@ -432,7 +440,7 @@ int main(int argc, char **argv){
     client c;
 
     int rv;
-    char opt;
+    int8_t opt;
 
     struct pollfd polls[2];
 
@@ -485,11 +493,19 @@ int main(int argc, char **argv){
         }
     }
 
+    if (settings.debug) {
+        printf("STARTING CLIENT\n");
+    }
+
     rv = client_init(&c, server_ip, server_port);
 
     // If client init failed, propagate error
     if (rv < 0) {
         return rv;
+    }
+
+    if (settings.debug) {
+        printf("Successfully initialised client\n");
     }
 
     // Polling a negative fd is defined behaviour that will not ever return on that fd.
@@ -515,6 +531,7 @@ int main(int argc, char **argv){
             rv = poll(polls, 1, timeout);
 
             if (rv == 0) {
+                if (settings.debug) printf("Handling timeout\n");
                 // Timeout occured
                 rv = handle_timeout(c.conn, c.fd, (struct sockaddr*) &c.remotesock, c.remotelen);
                 if (rv == ERROR_DROP_CONNECTION) {
