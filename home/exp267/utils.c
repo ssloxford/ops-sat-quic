@@ -75,6 +75,7 @@ int resolve_and_process(in_addr_t target_host, int target_port, int protocol, in
 
     struct sockaddr_in sockaddrin;
     socklen_t sockaddrinlen = sizeof(sockaddrin);
+    memset(&sockaddrin, 0, sockaddrinlen);
 
     switch (protocol) {
         case IPPROTO_TCP:
@@ -158,13 +159,26 @@ int bind_udp_socket(int *fd, const char *server_port) {
 
 int connect_udp_socket(int *fd, const char *server_ip, const char *server_port, struct sockaddr *remoteaddr, socklen_t *remoteaddrlen) {
     int rv;
-    
-    rv = resolve_and_process(inet_addr(server_ip), atoi(server_port), IPPROTO_UDP, 0, NULL, NULL, remoteaddr, remoteaddrlen);
+
+    struct in_addr inaddr;
+
+    rv = inet_aton(server_ip, &inaddr);
+
+    // 0 for error is correct. https://linux.die.net/man/3/inet_aton
+    if (rv == 0) {
+        // Address provided is invalid
+        return -1;
+    }
+
+    // Resolves target host and port, opens connection to it,
+    // and updates variables fd, and local and remote sockaddr and socklen in client
+    rv = resolve_and_process(inaddr.s_addr, atoi(server_port), IPPROTO_UDP, 0, NULL, NULL, remoteaddr, remoteaddrlen);
 
     if (rv < 0) {
         return rv;
     }
 
     *fd = rv;
+
     return 0;
 }

@@ -356,7 +356,7 @@ int main(int argc, char **argv) {
     // Init the UDP socket
     if (udp_client) {
         // Connect to the provided UDP port
-        rv = connect_udp_socket(&udp_fd, "localhost", udp_target_port, (struct sockaddr*) &udp_remote, &udp_remotelen);
+        rv = connect_udp_socket(&udp_fd, "127.0.0.1", udp_target_port, (struct sockaddr*) &udp_remote, &udp_remotelen);
         udp_remote_set = 1;
     } else {
         // Listen on provided socket
