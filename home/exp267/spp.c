@@ -11,7 +11,7 @@
 // TODO - Warning when truncating significant bits?
 int construct_spp(SPP *spp, const uint8_t *payload, size_t payloadlen, uint8_t *data_field, pkt_type packet_type, seq_flag seq_flags, uint16_t spp_pkt_num, uint8_t udp_pkt_num, uint8_t udp_frag_count, uint8_t udp_frag_num) {
     if (payloadlen > SPP_MAX_DATA_LEN) {
-        fprintf(stderr, "Data of %ld bytes does not fit into max payload field\n", payloadlen);
+        fprintf(stderr, "Data of %d bytes does not fit into max payload field\n", payloadlen);
         return 1;
     }
     

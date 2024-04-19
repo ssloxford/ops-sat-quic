@@ -7,7 +7,7 @@ if [[ $(git diff --stat) != '' ]]; then
 else
  version="${version}-clean"
 fi
-package_name="$USER"_"$version"_"$NAME".zip
+package_name="$USER"_"$version"_"$NAME"_soft.zip
 zip -r delivery/$package_name home/*
 echo "Finished preparing ZIP file"
 ls -lart delivery/$package_name

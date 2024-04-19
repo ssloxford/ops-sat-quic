@@ -1,6 +1,8 @@
 # User-defined
-#Log files
+# Log files
 *.log
+# Built source code zips
+/delivery
 
 # Prerequisites
 *.d

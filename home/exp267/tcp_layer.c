@@ -11,6 +11,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <limits.h>
 
 #define TCP_DEFAULT_PORT "11112"
 
@@ -32,36 +35,39 @@ typedef struct _incomplete_packet {
 } incomplete_packet;
 
 static int connect_tcp_socket(int *fd, char *server_port, struct sockaddr *remoteaddr, socklen_t *remoteaddrlen) {
-    struct addrinfo hints;
-
-    memset(&hints, 0, sizeof(hints));
-
-    hints.ai_family = AF_INET;
-    hints.ai_protocol = IPPROTO_TCP;
-    hints.ai_flags = AI_NUMERICSERV;
-
-    // Opens TCP socket and connects to localhost:target_port, saving the sockaddr to remoteaddr
-    return resolve_and_process(fd, "localhost", server_port, &hints, 0, NULL, NULL, remoteaddr, remoteaddrlen);
-}
-
-static int bind_and_accept_tcp_socket(int *fd, char *server_port, struct sockaddr *remoteaddr, socklen_t *remoteaddrlen) {
-    struct addrinfo hints;
-
     int rv;
 
-    int listen_fd;
+    struct in_addr inaddr;
 
-    memset(&hints, 0, sizeof(hints));
+    rv = inet_aton("127.0.0.1", &inaddr);
 
-    hints.ai_family = AF_INET; // IPv4 addresses
-    hints.ai_protocol = IPPROTO_TCP; // TCP socket
-    hints.ai_flags = AI_PASSIVE | AI_NUMERICSERV;
+    // 0 for error is correct. https://linux.die.net/man/3/inet_aton
+    if (rv == 0) {
+        // Address provided is invalid
+        return -1;
+    }
 
-    rv = resolve_and_process(&listen_fd, INADDR_ANY, server_port, &hints, 1, NULL, NULL, NULL, NULL);
+    // Opens TCP socket and connects to localhost:target_port, saving the sockaddr to remoteaddr
+    rv = resolve_and_process(inaddr.s_addr, atoi(server_port), IPPROTO_UDP, 0, NULL, NULL, remoteaddr, remoteaddrlen);
 
     if (rv < 0) {
         return rv;
     }
+
+    *fd = rv;
+    return 0;
+}
+
+static int bind_and_accept_tcp_socket(int *fd, char *server_port, struct sockaddr *remoteaddr, socklen_t *remoteaddrlen) {
+    int rv, listen_fd;
+
+    rv = resolve_and_process(INADDR_ANY, atoi(server_port), IPPROTO_TCP, 1, NULL, NULL, NULL, NULL);
+
+    if (rv < 0) {
+        return rv;
+    }
+
+    listen_fd = rv;
 
     // Marks the TCP socket as accepting connections. Connection queue of length 1
     rv = listen(listen_fd, 1);
