@@ -141,10 +141,8 @@ static incomplete_packet* insert_new_node(const SPP *spp, incomplete_packet *las
     return node;
 }
 
-static int handle_tcp_packet(int udp_fd, uint8_t *buf, size_t buflen, size_t pktlen, incomplete_packet *incomp_pkts, const struct sockaddr *udp_addr, socklen_t addrlen, int debug) {
+static int handle_spp(int udp_fd, uint8_t *buf, size_t pktlen, incomplete_packet *incomp_pkts, const struct sockaddr *udp_addr, socklen_t addrlen, int debug) {
     int rv;
-
-    size_t bytes_deserialised = 0;
 
     SPP spp;
     uint8_t spp_payload[SPP_MAX_DATA_LEN];
@@ -155,86 +153,77 @@ static int handle_tcp_packet(int udp_fd, uint8_t *buf, size_t buflen, size_t pkt
 
     spp.user_data = spp_payload;
 
-    // Loop allows multiple contiguous SPP packets in the TCP payload
-    // TODO - Check there's not an out by one error
-    while (pktlen > bytes_deserialised) {
-        rv = deserialise_spp(buf+bytes_deserialised, &spp);
+    // Bytes deserialised is incremented by pktlen
+    rv = deserialise_spp(buf, &spp);
 
-        if (rv < 0) {
-            return rv;
+    if (rv == -1) {
+        // Packet had a corrupted header. Drop the packet
+        return -1;
+    }
+
+    if (spp.primary_header.pkt_id.apid != SPP_APID) {
+        // Packet not intended for me
+        return -1;
+    }
+
+    // UDP packet number we're searching for in the linked list of incomplete packets
+    searching_udp_pkt_num = spp.secondary_header.udp_packet_num;
+
+    // Search the incomplete packets list for this UDP packet number
+    for (pkt_ptr = incomp_pkts;;) {
+        if (pkt_ptr->next == NULL) {
+            // At the end of the list. Insert new node on the end
+            found_pkt = insert_new_node(&spp, pkt_ptr, pkt_ptr->next);
+            if (found_pkt == NULL) {
+                return ERROR_OUT_OF_MEMORY;
+            }
+            break;
         }
+        
+        // UDP packet number of the node being checked
+        node_udp_pkt_num = pkt_ptr->next->packet_number;
 
-        // Allows us to keep track of where to start the next SPP packet
-        bytes_deserialised += rv;
+        if (node_udp_pkt_num == searching_udp_pkt_num) {
+            found_pkt = pkt_ptr->next;
+            add_to_node(&spp, found_pkt);
+            break;
+        } else if (node_udp_pkt_num < searching_udp_pkt_num) {
+            // Search list will be ordered by udp packet number in increaing order
 
-        if (spp.primary_header.pkt_id.apid != SPP_APID) {
-            // Packet not intended for me
+            // TODO - Process timeout to abandon partial UDP packet
             continue;
-        }
-
-        // UDP packet number we're searching for in the linked list of incomplete packets
-        searching_udp_pkt_num = spp.secondary_header.udp_packet_num;
-
-        // Search the incomplete packets list for this UDP packet number
-        for (pkt_ptr = incomp_pkts;;) {
-            if (pkt_ptr->next == NULL) {
-                // At the end of the list. Insert new node on the end
-                found_pkt = insert_new_node(&spp, pkt_ptr, pkt_ptr->next);
-                if (found_pkt == NULL) {
-                    return ERROR_OUT_OF_MEMORY;
-                }
-                break;
+        } else {
+            // next packet number is greater than the search number, so insert here
+            found_pkt = insert_new_node(&spp, pkt_ptr, pkt_ptr->next);
+            if (found_pkt == NULL) {
+                return ERROR_OUT_OF_MEMORY;
             }
-            
-            // UDP packet number of the node being checked
-            node_udp_pkt_num = pkt_ptr->next->packet_number;
-
-            if (node_udp_pkt_num == searching_udp_pkt_num) {
-                found_pkt = pkt_ptr->next;
-                add_to_node(&spp, found_pkt);
-                break;
-            } else if (node_udp_pkt_num < searching_udp_pkt_num) {
-                // Search list will be ordered by udp packet number in increaing order
-
-                // TODO - Process timeout to abandon partial UDP packet
-                continue;
-            } else {
-                // next packet number is greater than the search number, so insert here
-                found_pkt = insert_new_node(&spp, pkt_ptr, pkt_ptr->next);
-                if (found_pkt == NULL) {
-                    return ERROR_OUT_OF_MEMORY;
-                }
-                break;
-            }
-        }
-
-        // found_pkt is a pointer to the node containing the relevant packet. Handle if the packet is now complete
-        if (found_pkt->frag_count == found_pkt->frags_recieved) {
-            // Packet is complete. Ready to be transmitted over UDP
-
-            if (debug) printf("SPP bridge: Sending completed UDP packet\n");
-
-            rv = sendto(udp_fd, found_pkt->partial_payload, found_pkt->packet_length, 0, udp_addr, addrlen);
-
-            if (rv == -1) {
-                fprintf(stderr, "SPP bridge: Sendto: %s\n", strerror(errno));
-                return -1;
-            }
-
-            // Reconnect the linked list
-            found_pkt->last->next = found_pkt->next;
-            if (found_pkt->next != NULL) {
-                found_pkt->next->last = found_pkt->last;
-            }
-
-            // Deallocate the list node and associated buffer
-            free(found_pkt->partial_payload);
-            free(found_pkt);
+            break;
         }
     }
 
-    if (bytes_deserialised != pktlen) {
-        fprintf(stderr, "SPP bridge: Warning: Bytes deserialised does not match bytes received\n");
+    // found_pkt is a pointer to the node containing the relevant packet. Handle if the packet is now complete
+    if (found_pkt->frag_count == found_pkt->frags_recieved) {
+        // Packet is complete. Ready to be transmitted over UDP
+
+        if (debug) printf("SPP bridge: Sending completed UDP packet\n");
+
+        rv = sendto(udp_fd, found_pkt->partial_payload, found_pkt->packet_length, 0, udp_addr, addrlen);
+
+        if (rv == -1) {
+            fprintf(stderr, "SPP bridge: Sendto: %s\n", strerror(errno));
+            return -1;
+        }
+
+        // Reconnect the linked list
+        found_pkt->last->next = found_pkt->next;
+        if (found_pkt->next != NULL) {
+            found_pkt->next->last = found_pkt->last;
+        }
+
+        // Deallocate the list node and associated buffer
+        free(found_pkt->partial_payload);
+        free(found_pkt);
     }
 
     return 0;
@@ -311,6 +300,9 @@ int main(int argc, char **argv) {
     incomplete_packet incomp_pkts;
     // The list is empty
     incomp_pkts.next = NULL;
+
+    // Header to let TCP inspect SPP packet size to read
+    SPP_primary_header header;
 
     // Allocate the buffers here for performance (avoids allocating largeish memory on the stack for every call)
     uint8_t buf[BUF_SIZE];
@@ -431,7 +423,22 @@ int main(int argc, char **argv) {
         } else if (polls[1].revents & POLLIN) {
             if (debug) printf("SPP bridge: TCP message recieved\n");
 
-            rv = recv(tcp_fd, buf, sizeof(buf), 0);
+            // Wait to be able to read a full header
+            rv = recv(tcp_fd, buf, SPP_HEADER_LEN, MSG_WAITALL);
+
+            if (rv == 0) {
+                printf("Remote shutdown TCP connection\n");
+                deinit(udp_fd, tcp_fd);
+                return 0;
+            } else if (rv == -1) {
+                fprintf(stderr, "Error when receiving TCP message: %s\n", strerror(errno));
+                continue;
+            }
+
+            deserialise_spp_prim_header(buf, &header);
+
+            // Wait to recieve the body of the SPP, then process it
+            rv = recv(tcp_fd, buf+SPP_HEADER_LEN, header.packet_data_length+1, MSG_WAITALL);
 
             if (rv == 0) {
                 printf("Remote shutdown TCP connection\n");
@@ -443,7 +450,7 @@ int main(int argc, char **argv) {
             }
 
             // TCP packet recieved
-            handle_tcp_packet(udp_fd, buf, sizeof(buf), rv, &incomp_pkts, (struct sockaddr*) &udp_remote, udp_remotelen, debug);
+            handle_spp(udp_fd, buf, rv+SPP_HEADER_LEN, &incomp_pkts, (struct sockaddr*) &udp_remote, udp_remotelen, debug);
         }
     }
 }

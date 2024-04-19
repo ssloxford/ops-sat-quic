@@ -8,7 +8,7 @@
 #define SPP_SEQ_COUNT_MODULO 16383
 
 #define SPP_PRIM_HEADER_LEN 6
-#define SPP_SEC_HEADER_LEN 2
+#define SPP_SEC_HEADER_LEN 3
 
 // Specific to ESA project
 #define SPP_MTU 256
@@ -90,6 +90,10 @@ typedef struct _SPP_secondary_header {
 
     // 4 bit field
     uint8_t udp_frag_num;
+
+    // 8 bit field. Applied to the primary and secondary header only.
+    // Field is symbolic. Checksum is not actually calculated into SPP struct. Field should not be accessed.
+    uint8_t checksum;
 } SPP_secondary_header;
 
 typedef struct _SPP {

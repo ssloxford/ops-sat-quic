@@ -35,6 +35,7 @@ int construct_spp(SPP *spp, const uint8_t *payload, size_t payloadlen, uint8_t *
     spp->secondary_header.udp_packet_num = udp_pkt_num;
     spp->secondary_header.udp_frag_count = 0x0f & udp_frag_count;
     spp->secondary_header.udp_frag_num = 0x0f & udp_frag_num;
+    // Checksum is calculated and verified when serialising. Not constructed here
 
     // Payload
     memcpy(data_field, payload, payloadlen);
@@ -75,34 +76,55 @@ int serialise_spp(uint8_t *buf, size_t buflen, const SPP *spp) {
     buf[7] |= 0xf0 & (spp->secondary_header.udp_frag_count << 4);
     buf[7] |= 0x0f & (spp->secondary_header.udp_frag_num);
 
+    // Checksum
+    for (int i = 0; i < SPP_HEADER_LEN; i++) {
+        // Bitwise xor for the header checksum. Obviously do not include the checksum field in that
+        if (i != 8) buf[8] ^= buf[i];
+    }
+
     size_t data_field_len = packet_length - SPP_HEADER_LEN;
     memcpy(buf+SPP_HEADER_LEN, spp->user_data, data_field_len);
 
     return 0;
 }
 
-int deserialise_spp(const uint8_t *buf, SPP *spp) {
-    spp->primary_header.packet_version_number = 0x07 & (buf[0] >> 5);
+void deserialise_spp_prim_header(const uint8_t *hdr, SPP_primary_header *header) {
+    header->packet_version_number = 0x07 & (hdr[0] >> 5);
     
-    spp->primary_header.pkt_id.packet_type = 0x01 & (buf[0] >> 4);
-    spp->primary_header.pkt_id.secondary_header_present = 0x01 & (buf[0] >> 3);
-    spp->primary_header.pkt_id.apid = 0x07ff & ((buf[0] << 8) | buf[1]);
+    header->pkt_id.packet_type = 0x01 & (hdr[0] >> 4);
+    header->pkt_id.secondary_header_present = 0x01 & (hdr[0] >> 3);
+    header->pkt_id.apid = 0x07ff & ((hdr[0] << 8) | hdr[1]);
 
-    spp->primary_header.pkt_seq_ctrl.sequence_flags = 0x03 & (buf[2] >> 6);
-    spp->primary_header.pkt_seq_ctrl.sequence_count = 0x3fff & ((buf[2] << 8) | buf[3]);
+    header->pkt_seq_ctrl.sequence_flags = 0x03 & (hdr[2] >> 6);
+    header->pkt_seq_ctrl.sequence_count = 0x3fff & ((hdr[2] << 8) | hdr[3]);
 
-    spp->primary_header.packet_data_length = 0xffff & ((buf[4] << 8) | buf[5]);
+    header->packet_data_length = 0xffff & ((hdr[4] << 8) | hdr[5]);
+}
+
+int deserialise_spp(const uint8_t *buf, SPP *spp) {
+    deserialise_spp_prim_header(buf, &spp->primary_header);
 
     // Secondary header
     spp->secondary_header.udp_packet_num = 0xff & buf[6];
     spp->secondary_header.udp_frag_count = 0x0f & (buf[7] >> 4);
     spp->secondary_header.udp_frag_num = 0x0f & buf[7];
 
+    // Verify checksum as first thing
+    uint8_t var_checksum = 0;
+    for (int i = 0; i < SPP_HEADER_LEN; i++) {
+        var_checksum ^= buf[i];
+    }
+
+    if (var_checksum != 0) {
+        // Checksum showed corrupted packet header. Drop packet
+        return -1;
+    }
+
     // It is assumed that the buffer in spp->user_data is big enough to take the data
     // It's also assumed that the buffer provided is long enough to hold all the promised data
     memcpy(spp->user_data, buf + SPP_HEADER_LEN, SPP_PAYLOAD_LENGTH(spp->primary_header.packet_data_length));
 
-    return SPP_TOTAL_LENGTH(spp->primary_header.packet_data_length);
+    return 0;
 }
 
 int fragment_data(SPP **spp, const uint8_t *data, size_t datalen, int *packets_made, uint16_t spp_pkt_count, uint8_t udp_pkt_num) {
