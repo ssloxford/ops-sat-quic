@@ -73,7 +73,7 @@ static int bind_and_accept_tcp_socket(int *fd, char *server_port, struct sockadd
     rv = listen(listen_fd, 1);
 
     if (rv < 0) {
-        fprintf(stderr, "listen: %s\n", strerror(errno));
+        fprintf(stderr, "SPP bridge: listen: %s\n", strerror(errno));
         return rv;
     }
 
@@ -81,7 +81,7 @@ static int bind_and_accept_tcp_socket(int *fd, char *server_port, struct sockadd
     rv = accept(listen_fd, remoteaddr, remoteaddrlen);
 
     if (rv == -1) {
-        fprintf(stderr, "accept: %s\n", strerror(errno));
+        fprintf(stderr, "SPP bridge: accept: %s\n", strerror(errno));
         return rv;
     }
 
@@ -115,7 +115,7 @@ static incomplete_packet* insert_new_node(const SPP *spp, incomplete_packet *las
     uint8_t *payload = malloc(MAX_UDP_PAYLOAD);
 
     if (payload == NULL) {
-        fprintf(stderr, "Warning: Out of memory. Could not insert new node\n");
+        fprintf(stderr, "SPP bridge: Warning: Out of memory. Could not insert new node\n");
         free(node);
         return NULL;
     }
@@ -141,7 +141,7 @@ static incomplete_packet* insert_new_node(const SPP *spp, incomplete_packet *las
     return node;
 }
 
-static int handle_tcp_packet(int udp_fd, uint8_t *buf, size_t buflen, size_t pktlen, incomplete_packet *incomp_pkts, const struct sockaddr *udp_addr, socklen_t addrlen) {
+static int handle_tcp_packet(int udp_fd, uint8_t *buf, size_t buflen, size_t pktlen, incomplete_packet *incomp_pkts, const struct sockaddr *udp_addr, socklen_t addrlen, int debug) {
     int rv;
 
     size_t bytes_deserialised = 0;
@@ -212,10 +212,12 @@ static int handle_tcp_packet(int udp_fd, uint8_t *buf, size_t buflen, size_t pkt
         if (found_pkt->frag_count == found_pkt->frags_recieved) {
             // Packet is complete. Ready to be transmitted over UDP
 
+            if (debug) printf("SPP bridge: Sending completed UDP packet\n");
+
             rv = sendto(udp_fd, found_pkt->partial_payload, found_pkt->packet_length, 0, udp_addr, addrlen);
 
             if (rv == -1) {
-                fprintf(stderr, "Sendto: %s\n", strerror(errno));
+                fprintf(stderr, "SPP bridge: Sendto: %s\n", strerror(errno));
                 return -1;
             }
 
@@ -232,7 +234,7 @@ static int handle_tcp_packet(int udp_fd, uint8_t *buf, size_t buflen, size_t pkt
     }
 
     if (bytes_deserialised != pktlen) {
-        fprintf(stderr, "Warning: Bytes deserialised does not match bytes received\n");
+        fprintf(stderr, "SPP bridge: Warning: Bytes deserialised does not match bytes received\n");
     }
 
     return 0;
@@ -264,7 +266,7 @@ static int handle_udp_packet(int tcp_fd, uint8_t *buf, size_t buflen, size_t pkt
         rv = send(tcp_fd, buf, bytes_to_send, 0);
 
         if (rv == -1) {
-            fprintf(stderr, "Send: %s\n", strerror(errno));
+            fprintf(stderr, "SPP bridge: Send: %s\n", strerror(errno));
             return -1;
         }
     }
@@ -285,6 +287,7 @@ void print_helpstring() {
     printf("-q [port]: Set TCP port\n");
     printf("-u: Run UDP connection in client mode\n");
     printf("-t: Run TCP connection in client mode\n");
+    printf("-d: Enable debug. Default off\n");
 }
 
 void deinit(int udp_fd, int tcp_fd) {
@@ -302,7 +305,7 @@ int main(int argc, char **argv) {
     memset(&udp_remote, 0, udp_remotelen);
     memset(&tcp_remote, 0, tcp_remotelen);
 
-    char opt;
+    int8_t opt;
 
     // List has a dummy node at the head
     incomplete_packet incomp_pkts;
@@ -320,10 +323,10 @@ int main(int argc, char **argv) {
     struct pollfd polls[2];
 
     char *udp_target_port, *tcp_target_port = TCP_DEFAULT_PORT;
-    int tcp_client = 0, udp_client = 0, udp_port_set = 0, udp_remote_set = 0;
+    int tcp_client = 0, udp_client = 0, udp_port_set = 0, udp_remote_set = 0, debug = 0;
 
     // Process option flags
-    while ((opt = getopt(argc, argv, "htp:q:u")) != -1) {
+    while ((opt = getopt(argc, argv, "htp:q:ud")) != -1) {
         switch (opt){
             case 'h':
                 print_helpstring();
@@ -341,6 +344,9 @@ int main(int argc, char **argv) {
                 break;
             case 'u':
                 udp_client = 1;
+                break;
+            case 'd':
+                debug = 1;
                 break;
             case '?':
                 printf("Unknown option -%c\n", optopt);
@@ -384,6 +390,8 @@ int main(int argc, char **argv) {
         return rv;
     }
 
+    if (debug) printf("SPP bridge: Successfully established connections\n");
+
     polls[0].fd = udp_fd;
     polls[1].fd = tcp_fd;
 
@@ -400,7 +408,7 @@ int main(int argc, char **argv) {
         }
 
         if (polls[0].revents & POLLIN) {
-            // printf("UDP message recieved\n");
+            if (debug) printf("SPP bridge: UDP message recieved\n");
             
             if (!udp_remote_set) {
                 rv = recvfrom(udp_fd, buf, sizeof(buf), 0, (struct sockaddr*) &udp_remote, &udp_remotelen);
@@ -419,8 +427,9 @@ int main(int argc, char **argv) {
             handle_udp_packet(tcp_fd, buf, sizeof(buf), rv, spp_count, udp_count, &packets_sent);
             udp_count++;
             spp_count += packets_sent;
+            if (spp_count >= SPP_SEQ_COUNT_MODULO) spp_count -= SPP_SEQ_COUNT_MODULO;
         } else if (polls[1].revents & POLLIN) {
-            // printf("TCP message recieved\n");
+            if (debug) printf("SPP bridge: TCP message recieved\n");
 
             rv = recv(tcp_fd, buf, sizeof(buf), 0);
 
@@ -434,7 +443,7 @@ int main(int argc, char **argv) {
             }
 
             // TCP packet recieved
-            handle_tcp_packet(udp_fd, buf, sizeof(buf), rv, &incomp_pkts, (struct sockaddr*) &udp_remote, udp_remotelen);
+            handle_tcp_packet(udp_fd, buf, sizeof(buf), rv, &incomp_pkts, (struct sockaddr*) &udp_remote, udp_remotelen, debug);
         }
     }
 }

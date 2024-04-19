@@ -4,6 +4,9 @@
 #include <stdint.h>
 #include <stddef.h>
 
+// 14 bit unsigned int
+#define SPP_SEQ_COUNT_MODULO 16383
+
 #define SPP_PRIM_HEADER_LEN 6
 #define SPP_SEC_HEADER_LEN 2
 

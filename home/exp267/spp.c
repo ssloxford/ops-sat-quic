@@ -15,6 +15,8 @@ int construct_spp(SPP *spp, const uint8_t *payload, size_t payloadlen, uint8_t *
         fprintf(stderr, "Data of %d bytes does not fit into max payload field\n", payloadlen);
         return 1;
     }
+
+    if (spp_pkt_num >= SPP_SEQ_COUNT_MODULO) spp_pkt_num -= SPP_SEQ_COUNT_MODULO;
     
     // Primary header
     spp->primary_header.packet_version_number = 0;

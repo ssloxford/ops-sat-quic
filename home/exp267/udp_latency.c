@@ -46,7 +46,7 @@ waiting_pkt* make_node(uint8_t *data, size_t datalen, int delay) {
 }
 
 int main(int argc, char **argv) {
-    char opt;
+    int8_t opt;
     int rv, tmp, discard_packet;
 
     int time_since_start;
