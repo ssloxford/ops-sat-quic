@@ -12,7 +12,7 @@
 int construct_spp(SPP *spp, const uint8_t *payload, size_t payloadlen, uint8_t *data_field, pkt_type packet_type, seq_flag seq_flags, uint16_t spp_pkt_num, uint8_t udp_pkt_num, uint8_t udp_frag_count, uint8_t udp_frag_num) {
     if (payloadlen > SPP_MAX_DATA_LEN) {
         // TODO - Limits.h this: It's %ld on x86 and %d on ARM. Or suppress/ignore warning
-        fprintf(stderr, "Data of %d bytes does not fit into max payload field\n", payloadlen);
+        fprintf(stderr, "Data of %ld bytes does not fit into max payload field\n", payloadlen);
         return 1;
     }
 
@@ -88,21 +88,20 @@ int serialise_spp(uint8_t *buf, size_t buflen, const SPP *spp) {
     return 0;
 }
 
-void deserialise_spp_prim_header(const uint8_t *hdr, SPP_primary_header *header) {
-    header->packet_version_number = 0x07 & (hdr[0] >> 5);
-    
-    header->pkt_id.packet_type = 0x01 & (hdr[0] >> 4);
-    header->pkt_id.secondary_header_present = 0x01 & (hdr[0] >> 3);
-    header->pkt_id.apid = 0x07ff & ((hdr[0] << 8) | hdr[1]);
-
-    header->pkt_seq_ctrl.sequence_flags = 0x03 & (hdr[2] >> 6);
-    header->pkt_seq_ctrl.sequence_count = 0x3fff & ((hdr[2] << 8) | hdr[3]);
-
-    header->packet_data_length = 0xffff & ((hdr[4] << 8) | hdr[5]);
+size_t get_spp_data_length(const uint8_t *buf) {
+    return ((buf[4] << 8) | buf[5]) + 1;
 }
 
 int deserialise_spp(const uint8_t *buf, SPP *spp) {
-    deserialise_spp_prim_header(buf, &spp->primary_header);
+    // Primary header
+    spp->primary_header.packet_version_number = 0x07 & (buf[0] >> 5);
+    
+    spp->primary_header.pkt_id.packet_type = 0x01 & (buf[0] >> 4);
+    spp->primary_header.pkt_id.secondary_header_present = 0x01 & (buf[0] >> 3);
+    spp->primary_header.pkt_id.apid = 0x07ff & ((buf[0] << 8) | buf[1]);
+
+    spp->primary_header.pkt_seq_ctrl.sequence_flags = 0x03 & (buf[2] >> 6);
+    spp->primary_header.pkt_seq_ctrl.sequence_count = 0x3fff & ((buf[2] << 8) | buf[3]);
 
     // Secondary header
     spp->secondary_header.udp_packet_num = 0xff & buf[6];

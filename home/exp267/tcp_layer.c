@@ -34,12 +34,12 @@ typedef struct _incomplete_packet {
     struct _incomplete_packet *next, *last;
 } incomplete_packet;
 
-static int connect_tcp_socket(int *fd, char *server_port, struct sockaddr *remoteaddr, socklen_t *remoteaddrlen) {
+static int connect_tcp_socket(int *fd, char *target_ip, char *target_port, struct sockaddr *remoteaddr, socklen_t *remoteaddrlen) {
     int rv;
 
     struct in_addr inaddr;
 
-    rv = inet_aton("127.0.0.1", &inaddr);
+    rv = inet_aton(target_ip, &inaddr);
 
     // 0 for error is correct. https://linux.die.net/man/3/inet_aton
     if (rv == 0) {
@@ -48,7 +48,7 @@ static int connect_tcp_socket(int *fd, char *server_port, struct sockaddr *remot
     }
 
     // Opens TCP socket and connects to localhost:target_port, saving the sockaddr to remoteaddr
-    rv = resolve_and_process(inaddr.s_addr, atoi(server_port), IPPROTO_UDP, 0, NULL, NULL, remoteaddr, remoteaddrlen);
+    rv = resolve_and_process(inaddr.s_addr, atoi(target_port), IPPROTO_UDP, 0, NULL, NULL, remoteaddr, remoteaddrlen);
 
     if (rv < 0) {
         return rv;
@@ -294,7 +294,8 @@ int main(int argc, char **argv) {
     memset(&udp_remote, 0, udp_remotelen);
     memset(&tcp_remote, 0, tcp_remotelen);
 
-    int8_t opt;
+    // Must be signed since we're checking for -1 and char on arm is unsigned
+    signed char opt;
 
     // List has a dummy node at the head
     incomplete_packet incomp_pkts;
@@ -311,6 +312,7 @@ int main(int argc, char **argv) {
     uint8_t udp_count = 0;
     // Total number of spp packets sent, to keep track of packet numbers in SPP headers
     uint8_t spp_count = 0;
+    size_t spp_data_length;
 
     struct pollfd polls[2];
 
@@ -366,15 +368,19 @@ int main(int argc, char **argv) {
         return rv;
     }
     
+    if (debug) printf("SPP bridge: Processing TCP port %s as %s\n", tcp_target_port, tcp_client ? "client" : "server");
+
     // Init the TCP connection
     if (tcp_client) {
         // Have it initiate tcp connection
-        rv = connect_tcp_socket(&tcp_fd, tcp_target_port, (struct sockaddr*) &tcp_remote, &tcp_remotelen);
+        rv = connect_tcp_socket(&tcp_fd, "127.0.0.1", tcp_target_port, (struct sockaddr*) &tcp_remote, &tcp_remotelen);
 
     } else {
         // Opens a socket to listen for TCP connections on and binds it to TCP port
         // Must then listen on that port and accept 
         rv = bind_and_accept_tcp_socket(&tcp_fd, tcp_target_port, (struct sockaddr*) &tcp_remote, &tcp_remotelen);
+
+        if (debug) printf("Successfully accepted TCP connection\n");
     }
     
     if (rv < 0) {
@@ -435,10 +441,10 @@ int main(int argc, char **argv) {
                 continue;
             }
 
-            deserialise_spp_prim_header(buf, &header);
+            spp_data_length = get_spp_data_length(buf);
 
             // Wait to recieve the body of the SPP, then process it
-            rv = recv(tcp_fd, buf+SPP_HEADER_LEN, header.packet_data_length+1, MSG_WAITALL);
+            rv = recv(tcp_fd, buf+SPP_HEADER_LEN, spp_data_length, MSG_WAITALL);
 
             if (rv == 0) {
                 printf("Remote shutdown TCP connection\n");

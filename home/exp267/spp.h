@@ -108,6 +108,8 @@ int construct_spp(SPP *spp, const uint8_t *payload, size_t payloadlen, uint8_t *
 
 int serialise_spp(uint8_t *buf, size_t buflen, const SPP *spp);
 
+size_t get_spp_data_length(const uint8_t *buf);
+
 int deserialise_spp(const uint8_t *buf, SPP *spp);
 
 int fragment_data(SPP **spp, const uint8_t *data, size_t datalen, int *packets_made, uint16_t spp_pkt_count, uint8_t udp_pkt_num);
