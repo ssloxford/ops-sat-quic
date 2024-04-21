@@ -440,7 +440,7 @@ int main(int argc, char **argv){
     client c;
 
     int rv;
-    int8_t opt;
+    signed char opt;
 
     struct pollfd polls[2];
 
@@ -493,9 +493,7 @@ int main(int argc, char **argv){
         }
     }
 
-    if (settings.debug) {
-        printf("STARTING CLIENT\n");
-    }
+    if (settings.debug) printf("STARTING CLIENT\n");
 
     rv = client_init(&c, server_ip, server_port);
 
@@ -504,9 +502,7 @@ int main(int argc, char **argv){
         return rv;
     }
 
-    if (settings.debug) {
-        printf("Successfully initialised client\n");
-    }
+    if (settings.debug) printf("Successfully initialised client\n");
 
     // Polling a negative fd is defined behaviour that will not ever return on that fd.
     // If not using input_fd, we can safely leave that fd as -1 and it will not be accessed

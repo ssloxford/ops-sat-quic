@@ -16,6 +16,9 @@
 #include <limits.h>
 
 #define TCP_DEFAULT_PORT "11112"
+// Destroy the packet if it's incomplete and no new fragment has been recieved in the last 30 seconds
+#define TIMEOUT_MS (30 * 1000)
+
 
 // TODO - Timeout on these?
 typedef struct _incomplete_packet {
@@ -29,6 +32,9 @@ typedef struct _incomplete_packet {
 
     // Copy the payloads into here as the packets are recieved
     uint8_t *partial_payload;
+
+    // millisecond timestamp to consider this packet lost and delete this node
+    uint64_t timeout;
 
     // Doubly linked list to allow fast insert and removal
     struct _incomplete_packet *next, *last;
@@ -98,7 +104,8 @@ static void add_to_node(const SPP *spp, incomplete_packet *node) {
     node->frags_recieved += 1;
     node->packet_length += payload_length;
 
-    // TODO - Update timeout
+    // Reset the timeout for this packet
+    node->timeout = timestamp_ms() + TIMEOUT_MS;
 
     // Offset is the max data length times the packet frag number
     // We assume that all previous packets have carried the max data len
@@ -144,12 +151,14 @@ static incomplete_packet* insert_new_node(const SPP *spp, incomplete_packet *las
 static int handle_spp(int udp_fd, uint8_t *buf, size_t pktlen, incomplete_packet *incomp_pkts, const struct sockaddr *udp_addr, socklen_t addrlen, int debug) {
     int rv;
 
+    uint64_t ts = timestamp_ms();
+
     SPP spp;
     uint8_t spp_payload[SPP_MAX_DATA_LEN];
 
     int node_udp_pkt_num, searching_udp_pkt_num;
 
-    incomplete_packet *pkt_ptr, *found_pkt;
+    incomplete_packet *prev_ptr, *pkt_ptr, *found_pkt;
 
     spp.user_data = spp_payload;
 
@@ -169,11 +178,13 @@ static int handle_spp(int udp_fd, uint8_t *buf, size_t pktlen, incomplete_packet
     // UDP packet number we're searching for in the linked list of incomplete packets
     searching_udp_pkt_num = spp.secondary_header.udp_packet_num;
 
+    prev_ptr = incomp_pkts;
+
     // Search the incomplete packets list for this UDP packet number
-    for (pkt_ptr = incomp_pkts;;) {
-        if (pkt_ptr->next == NULL) {
+    for (pkt_ptr = prev_ptr->next;;pkt_ptr = prev_ptr->next) {
+        if (pkt_ptr == NULL) {
             // At the end of the list. Insert new node on the end
-            found_pkt = insert_new_node(&spp, pkt_ptr, pkt_ptr->next);
+            found_pkt = insert_new_node(&spp, prev_ptr, pkt_ptr);
             if (found_pkt == NULL) {
                 return ERROR_OUT_OF_MEMORY;
             }
@@ -181,20 +192,32 @@ static int handle_spp(int udp_fd, uint8_t *buf, size_t pktlen, incomplete_packet
         }
         
         // UDP packet number of the node being checked
-        node_udp_pkt_num = pkt_ptr->next->packet_number;
+        node_udp_pkt_num = pkt_ptr->packet_number;
 
         if (node_udp_pkt_num == searching_udp_pkt_num) {
-            found_pkt = pkt_ptr->next;
+            found_pkt = pkt_ptr;
             add_to_node(&spp, found_pkt);
             break;
         } else if (node_udp_pkt_num < searching_udp_pkt_num) {
-            // Search list will be ordered by udp packet number in increaing order
+            // Search list will be ordered by udp packet number in increaing order.
+            // If SPPs are lost, the incomplete will be near the front of the list and will be checked and deallocated eventually
 
-            // TODO - Process timeout to abandon partial UDP packet
+            if (pkt_ptr->timeout < ts) {
+                // This packet has expired. Destroy it
+                prev_ptr->next = pkt_ptr->next;
+
+                // Deallocate this node
+                free(pkt_ptr->partial_payload);
+                free(pkt_ptr);
+            } else {
+                // Advance over this packet. Update the prev_ptr
+                prev_ptr = pkt_ptr;
+            }
+
             continue;
         } else {
             // next packet number is greater than the search number, so insert here
-            found_pkt = insert_new_node(&spp, pkt_ptr, pkt_ptr->next);
+            found_pkt = insert_new_node(&spp, prev_ptr, pkt_ptr);
             if (found_pkt == NULL) {
                 return ERROR_OUT_OF_MEMORY;
             }
@@ -212,6 +235,10 @@ static int handle_spp(int udp_fd, uint8_t *buf, size_t pktlen, incomplete_packet
 
         if (rv == -1) {
             fprintf(stderr, "SPP bridge: Sendto: %s\n", strerror(errno));
+            if (errno == ECONNREFUSED) {
+                // The remote has closed the UDP. 
+                return ERROR_SOCKET;
+            }
             return -1;
         }
 
@@ -343,13 +370,13 @@ int main(int argc, char **argv) {
                 debug = 1;
                 break;
             case '?':
-                printf("Unknown option -%c\n", optopt);
+                printf("SPP bridge: Unknown option -%c\n", optopt);
                 break;
         }
     }
 
     if (!udp_port_set) {
-        fprintf(stderr, "Must set UDP port to listen on. See help string\n");
+        fprintf(stderr, "SPP bridge: Must set UDP port to listen on. See help string\n");
         return 0;
     }
 
@@ -364,7 +391,7 @@ int main(int argc, char **argv) {
     }
 
     if (rv < 0) {
-        fprintf(stderr, "Error when establishing UDP connection\n");
+        fprintf(stderr, "SPP bridge: Error when establishing UDP connection\n");
         return rv;
     }
     
@@ -380,11 +407,11 @@ int main(int argc, char **argv) {
         // Must then listen on that port and accept 
         rv = bind_and_accept_tcp_socket(&tcp_fd, tcp_target_port, (struct sockaddr*) &tcp_remote, &tcp_remotelen);
 
-        if (debug) printf("Successfully accepted TCP connection\n");
+        if (debug) printf("SPP bridge: Successfully accepted TCP connection\n");
     }
     
     if (rv < 0) {
-        fprintf(stderr, "Error when establishing TCP connection\n");
+        fprintf(stderr, "SPP bridge: Error when establishing TCP connection\n");
         return rv;
     }
 
@@ -407,17 +434,20 @@ int main(int argc, char **argv) {
 
         if (polls[0].revents & POLLIN) {
             if (debug) printf("SPP bridge: UDP message recieved\n");
-            
-            if (!udp_remote_set) {
-                rv = recvfrom(udp_fd, buf, sizeof(buf), 0, (struct sockaddr*) &udp_remote, &udp_remotelen);
-                udp_remote_set = 1;
-            } else {
-                // Don't update the udp_remote struct. Otherwise the same as above.
-                rv = recv(udp_fd, buf, sizeof(buf), 0);
-            }
+
+            // If dealing with a new client, will update address. Lets bridge persist across clients
+            rv = recvfrom(udp_fd, buf, sizeof(buf), 0, (struct sockaddr*) &udp_remote, &udp_remotelen);
+            udp_remote_set = 1;
 
             if (rv == -1) {
-                fprintf(stderr, "Error when receiving UDP message: %s\n", strerror(errno));
+                fprintf(stderr, "SPP bridge: Error when receiving UDP message: %s\n", strerror(errno));
+                if (errno == ECONNREFUSED) {
+                    // If the remote is a server that's terminated, also terminate
+                    if (udp_client) return -1;
+                    // Otherwise, wait for the next connection to the local UDP server
+                    udp_remote_set = 0;
+                }
+                errno = 0;
                 continue;
             }
 
@@ -433,11 +463,11 @@ int main(int argc, char **argv) {
             rv = recv(tcp_fd, buf, SPP_HEADER_LEN, MSG_WAITALL);
 
             if (rv == 0) {
-                printf("Remote shutdown TCP connection\n");
+                printf("SPP bridge: Remote shutdown TCP connection\n");
                 deinit(udp_fd, tcp_fd);
                 return 0;
             } else if (rv == -1) {
-                fprintf(stderr, "Error when receiving TCP message: %s\n", strerror(errno));
+                fprintf(stderr, "SPP bridge: Error when receiving TCP message: %s\n", strerror(errno));
                 continue;
             }
 
@@ -447,16 +477,26 @@ int main(int argc, char **argv) {
             rv = recv(tcp_fd, buf+SPP_HEADER_LEN, spp_data_length, MSG_WAITALL);
 
             if (rv == 0) {
-                printf("Remote shutdown TCP connection\n");
+                printf("SPP bridge: Remote shutdown TCP connection\n");
                 deinit(udp_fd, tcp_fd);
                 return 0;
             } else if (rv == -1) {
-                fprintf(stderr, "Error when receiving TCP message: %s\n", strerror(errno));
+                fprintf(stderr, "SPP bridge: Error when receiving TCP message: %s\n", strerror(errno));
                 continue;
             }
 
             // TCP packet recieved
-            handle_spp(udp_fd, buf, rv+SPP_HEADER_LEN, &incomp_pkts, (struct sockaddr*) &udp_remote, udp_remotelen, debug);
+            rv = handle_spp(udp_fd, buf, rv+SPP_HEADER_LEN, &incomp_pkts, (struct sockaddr*) &udp_remote, udp_remotelen, debug);
+
+            if (rv < 0) {
+                if (rv == ERROR_SOCKET) {
+                    // If the remote is a server that's terminated, also terminate
+                    if (udp_client) return -1;
+                    // Otherwise, wait for the next connection to the local UDP server
+                    udp_remote_set = 0;
+                }
+                return rv;
+            }
         }
     }
 }

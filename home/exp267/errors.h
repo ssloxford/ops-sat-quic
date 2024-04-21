@@ -22,4 +22,6 @@
 #define ERROR_DRAINING_STATE -61
 #define ERROR_DROP_CONNECTION -62
 
+#define ERROR_SOCKET -71
+
 #endif
