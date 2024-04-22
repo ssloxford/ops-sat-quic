@@ -1,5 +1,6 @@
 #include "callbacks.h"
 #include "utils.h"
+#include "connection.h"
 
 #include <stdio.h>
 #include <inttypes.h>
@@ -48,32 +49,9 @@ int acked_stream_data_offset_cb(ngtcp2_conn *conn, uint64_t offset, uint64_t dat
 }
 
 int extend_max_local_streams_uni_cb(ngtcp2_conn *conn, stream *stream_list) {
-    stream* stream_n = malloc(sizeof(stream));
+    stream* stream_n = open_stream(conn);
 
     if (stream_n == NULL) {
-        return NGTCP2_ERR_CALLBACK_FAILURE;
-    }
-
-    stream_n->stream_offset = 0;
-
-    // Set up the dummy header on the stream
-    stream_n->inflight_head = malloc(sizeof(data_node));
-
-    if (stream_n->inflight_head == NULL) {
-        free(stream_n);
-        return NGTCP2_ERR_CALLBACK_FAILURE;
-    }
-
-    // Initialse all the pointers
-    stream_n->inflight_tail = stream_n->send_tail = stream_n->inflight_head;
-    stream_n->send_tail->next = NULL;
-
-    // Opens a new stream and sets the stream id in the stream struct
-    int rv = ngtcp2_conn_open_uni_stream(conn, &stream_n->stream_id, stream_n);
-
-    if (rv < 0) {
-        free(stream_n->inflight_head);
-        free(stream_n);
         return NGTCP2_ERR_CALLBACK_FAILURE;
     }
 

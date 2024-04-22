@@ -30,6 +30,9 @@ typedef struct _stream {
 
     uint64_t stream_offset;
 
+    // Timestamp of when the stream was opened for timing reporting
+    int64_t stream_opened;
+
     data_node *inflight_head, *inflight_tail, *send_tail;
 
     struct _stream *next;
@@ -52,5 +55,7 @@ int get_timeout(ngtcp2_conn *conn);
 int handle_timeout(ngtcp2_conn *conn, int fd, struct sockaddr *remote_addr, socklen_t remote_addrlen);
 
 int enqueue_message(const uint8_t *payload, size_t payloadlen, int fin, stream *stream);
+
+stream* open_stream(ngtcp2_conn *conn);
 
 #endif

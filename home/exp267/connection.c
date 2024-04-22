@@ -264,3 +264,37 @@ int enqueue_message(const uint8_t *payload, size_t payloadlen, int fin, stream *
 
     return 0;
 }
+
+stream* open_stream(ngtcp2_conn *conn) {
+    stream *stream_n = malloc(sizeof(stream));
+
+    if (stream_n == NULL) {
+        return NULL;
+    }
+
+    stream_n->stream_offset = 0;
+    stream_n->stream_opened = timestamp_ms();
+
+    // Set up the dummy header on the stream
+    stream_n->inflight_head = malloc(sizeof(data_node));
+
+    if (stream_n->inflight_head == NULL) {
+        free(stream_n);
+        return NULL;
+    }
+
+    // Initialse all the pointers
+    stream_n->inflight_tail = stream_n->send_tail = stream_n->inflight_head;
+    stream_n->send_tail->next = NULL;
+
+    // Opens a new stream and sets the stream id in the stream struct
+    int rv = ngtcp2_conn_open_uni_stream(conn, &stream_n->stream_id, stream_n);
+
+    if (rv < 0) {
+        free(stream_n->inflight_head);
+        free(stream_n);
+        return NULL;
+    }
+
+    return stream_n;
+}

@@ -24,10 +24,43 @@ static int server_acked_stream_data_offset_cb(ngtcp2_conn *conn, int64_t stream_
     return acked_stream_data_offset_cb(conn, offset, datalen, stream_n, s->settings->timing);
 }
 
-static int server_extend_max_local_streams_uni_cb(ngtcp2_conn *conn, uint64_t max_streams, void *user_data) {
+static int server_stream_open_cb(ngtcp2_conn *conn, int64_t incoming_stream_id, void *user_data) {
+    // Remote has opened a stream
     server *s = user_data;
 
-    return extend_max_local_streams_uni_cb(conn, s->streams);
+    stream *stream_n;
+
+    if (s->settings->reply) {
+        // Open a stream to reply this data on
+        // Create the node for the reply stream lookup list
+        reply_on *reply = malloc(sizeof(reply_on));
+
+        if (reply == NULL) {
+            return NGTCP2_ERR_CALLBACK_FAILURE;
+        }
+
+        // Open a stream to reply on and register it in the reply list
+        stream_n = open_stream(conn);
+
+        if (stream_n == NULL) {
+            free(reply);
+            return NGTCP2_ERR_CALLBACK_FAILURE;
+        }
+
+        // Insert the newly created stream at the head of the provided stream list
+        // Streams has a dummy header
+        stream_n->next = s->streams->next;
+        s->streams->next = stream_n;
+
+        reply->incoming_stream_id = incoming_stream_id;
+        reply->outgoing_stream_id = stream_n->stream_id;
+
+        // Add to the front of the reply_streams lookup list. No dummy header node
+        reply->next = s->reply_stream;
+        s->reply_stream = reply;
+    }
+
+    return 0;
 }
 
 static int server_recv_stream_data_cb(ngtcp2_conn *conn, uint32_t flags, int64_t stream_id, uint64_t offset, const uint8_t *data, size_t datalen, void *user_data, void *stream_user_data) {
@@ -44,7 +77,34 @@ static int server_recv_stream_data_cb(ngtcp2_conn *conn, uint32_t flags, int64_t
     }
     
     if (s->settings->reply) {
-        rv = enqueue_message(data, datalen, 0, s->streams->next);
+        reply_on *reply;
+
+        for (reply = s->reply_stream; reply != NULL; reply = reply->next) {
+            if (reply->incoming_stream_id == stream_id) {
+                // We've found the stream we need to reply on
+                break;
+            }
+        }
+
+        if (reply == NULL) {
+            // Something's gone wrong. We don't have the stream we've recieved on in the reply lookup list
+            return NGTCP2_ERR_CALLBACK_FAILURE;
+        }
+
+        stream *stream_n;
+
+        // Search for the stream to reply on in the list
+        for (stream_n = s->streams->next; stream_n != NULL; stream_n = stream_n->next) {
+            if (stream_n->stream_id == reply->outgoing_stream_id) {
+                break;
+            }
+        }
+
+        if (stream_n == NULL) {
+            return NGTCP2_ERR_CALLBACK_FAILURE;
+        }
+
+        rv = enqueue_message(data, datalen, 0, stream_n);
         
         if (rv < 0) {
             return NGTCP2_ERR_CALLBACK_FAILURE;
@@ -69,14 +129,10 @@ static int server_stream_close_cb(ngtcp2_conn *conn, uint32_t flags, int64_t str
 
     stream *stream_n = stream_data;
 
-    stream *prev_ptr = s->streams;
-
-    for (stream *ptr = prev_ptr->next; ptr != stream_n; ptr = prev_ptr->next) {
-        prev_ptr = ptr;
+    if (s->settings->timing) {
+        // Report timing for that stream
+        printf("Stream %ld closed in %lld after %ld bytes\n", stream_id, timestamp_ms() - stream_n->stream_opened, stream_n->stream_offset);
     }
-
-    // Jump pointers over the stream being removed
-    prev_ptr->next = stream_n->next;
 
     return stream_close_cb(stream_n, s->streams);
 }
@@ -136,12 +192,12 @@ static int server_settings_init(ngtcp2_callbacks *callbacks, ngtcp2_settings *se
         ngtcp2_crypto_hp_mask_cb,
         server_recv_stream_data_cb, /* recv_stream_data */
         server_acked_stream_data_offset_cb, /* acked_stream_data_offset */
-        NULL, /* stream_open */
+        server_stream_open_cb, /* stream_open */
         server_stream_close_cb, /* stream_close */
         NULL, /* recv_stateless_reset */
         NULL, /* recv_retry */
         NULL, /* extend_max_local_streams_bidi */
-        server_extend_max_local_streams_uni_cb, /* extend_max_local_streams_uni */
+        NULL, /* extend_max_local_streams_uni */
         rand_cb, // Not provided by library
         get_new_connection_id_cb, // Not provided by library
         NULL, /* remove_connection_id */
@@ -213,8 +269,9 @@ static int server_init(server *s, char *server_port) {
     if (s->streams == NULL) {
         return ERROR_OUT_OF_MEMORY;
     }
-
     s->streams->next = NULL;
+
+    s->reply_stream = NULL;
 
     s->locallen = sizeof(s->localsock);
     s->remotelen = sizeof(s->remotesock);

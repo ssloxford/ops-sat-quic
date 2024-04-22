@@ -37,14 +37,10 @@ static int client_stream_close_cb(ngtcp2_conn *conn, uint32_t flags, int64_t str
 
     stream *stream_n = stream_data;
 
-    stream *prev_ptr = c->streams;
-
-    for (stream *ptr = prev_ptr->next; ptr != stream_n; ptr = prev_ptr->next) {
-        prev_ptr = ptr;
+    if (c->settings->timing) {
+        // Report timing for that stream
+        printf("Stream %ld closed in %lld after %ld bytes\n", stream_id, timestamp_ms() - stream_n->stream_opened, stream_n->stream_offset);
     }
-
-    // Jump pointers over the stream being removed
-    prev_ptr->next = stream_n->next;
 
     return stream_close_cb(stream_n, c->streams);
 }
@@ -412,6 +408,10 @@ static int client_close_connection(client *c) {
 static void client_deinit(client *c) {
     client_close_connection(c);
 
+    if (c->settings->timing) {
+        printf("Total client uptime: %lld\n", timestamp_ms() - c->initial_ts);
+    }
+
     ngtcp2_conn_del(c->conn);
 
     wolfSSL_free(c->ssl);
@@ -567,7 +567,7 @@ int main(int argc, char **argv){
             } else if (polls[1].revents & POLLIN) {
                 // Recieved input data to be transmitted
                 // By shortening the payload buffer by 1, there will be space to null terminate if needed
-                payloadlen = read(settings.input_fd, payload, sizeof(payload)-1);
+                payloadlen = read(settings.input_fd, payload, sizeof(payload));
 
                 if (payloadlen == -1) {
                     fprintf(stdout, "Failed to read from input: %s\n", strerror(errno));
@@ -579,12 +579,6 @@ int main(int argc, char **argv){
                     close(settings.input_fd);
                     client_deinit(&c);
                     return 0;
-                }
-
-                if (settings.input_fd == STDIN_FILENO) {
-                    // Null terminate the string
-                    payload[payloadlen] = '\0';
-                    payloadlen++;
                 }
 
                 rv = enqueue_message(payload, payloadlen, 0, c.streams->next);

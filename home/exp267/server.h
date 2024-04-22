@@ -21,6 +21,15 @@ typedef struct _server_settings {
     int timing;
 } server_settings;
 
+// Node in a linked list registering what stream to reply on when receiving data
+typedef struct _reply_on {
+    int64_t incoming_stream_id;
+
+    int64_t outgoing_stream_id;
+
+    struct _reply_on *next;
+} reply_on;
+
 typedef struct _server {
     ngtcp2_conn *conn;
     ngtcp2_crypto_conn_ref ref;
@@ -40,6 +49,7 @@ typedef struct _server {
     server_settings *settings;
 
     uint64_t initial_ts;
+    reply_on *reply_stream;
 } server;
 
 #endif
