@@ -26,26 +26,22 @@ static int client_acked_stream_data_offset_cb(ngtcp2_conn *conn, int64_t stream_
     return acked_stream_data_offset_cb(conn, offset, datalen, stream_n, c->settings->timing);
 }
 
-static int client_extend_max_local_streams_uni_cb(ngtcp2_conn *conn, uint64_t max_streams, void *user_data) {
-    client *c = user_data;
-
-    return extend_max_local_streams_uni_cb(conn, c->streams);
-}
-
 static int client_stream_close_cb(ngtcp2_conn *conn, uint32_t flags, int64_t stream_id, uint64_t app_error_code, void *user_data, void *stream_data) {
+    // A local stream has been closed
     client *c = user_data;
 
     stream *stream_n = stream_data;
 
     if (c->settings->timing) {
         // Report timing for that stream
-        printf("Stream %ld closed in %lld after %ld bytes\n", stream_id, timestamp_ms() - stream_n->stream_opened, stream_n->stream_offset);
+        printf("Stream %ld closed in %ld after %ld bytes\n", stream_id, timestamp_ms() - stream_n->stream_opened, stream_n->stream_offset);
     }
 
     return stream_close_cb(stream_n, c->streams);
 }
 
 static int client_handshake_completed_cb(ngtcp2_conn *conn, void *user_data) {
+    // Just used for reporing handshake timing
     client *c = user_data;
 
     if (c->settings->timing) {
@@ -140,7 +136,7 @@ static int client_ngtcp2_init(client *c, char* server_ip, char *server_port) {
         NULL, /* recv_stateless_reset */
         ngtcp2_crypto_recv_retry_cb,
         NULL, /* extend_max_local_streams_bidi */
-        client_extend_max_local_streams_uni_cb, /* extend_max_local_streams_uni */ // Not provided by library
+        NULL, /* extend_max_local_streams_uni */ // Not provided by library
         rand_cb,
         get_new_connection_id_cb,
         NULL, /* remove_connection_id */
@@ -247,6 +243,16 @@ static int client_init(client *c, char* server_ip, char *server_port) {
 
     c->streams->next = NULL;
 
+    c->multiplex_ctx = malloc(sizeof(stream_multiplex_ctx));
+    if (c->multiplex_ctx == NULL) {
+        free(c->streams);
+        return ERROR_OUT_OF_MEMORY;
+    }
+
+    // Initialise the multiplex context
+    // Last sent is initialised to the dummy head
+    c->multiplex_ctx->streams_list = c->multiplex_ctx->last_sent = c->streams;
+
     c->locallen = sizeof(c->localsock);
     c->remotelen = sizeof(c->remotesock);
 
@@ -278,26 +284,17 @@ static int client_init(client *c, char* server_ip, char *server_port) {
 static int client_write_step(client *c) {
     int rv;
 
+    stream *stream_to_send;
+
     if (c->settings->debug) printf("Starting write step\n");
 
-    if (c->streams->next == NULL) {
-        rv = write_step(c->conn, c->fd, NULL, (struct sockaddr*) &c->remotesock, c->remotelen);
+    // If there are no streams open, multiplex_streams will return NULL
+    stream_to_send = multiplex_streams(c->multiplex_ctx);
 
-        if (rv < 0) {
-            return rv;
-        }
-    } else {
-        rv = write_step(c->conn, c->fd, c->streams->next->inflight_tail, (struct sockaddr*) &c->remotesock, c->remotelen);
+    rv = write_step(c->conn, c->fd, stream_to_send, (struct sockaddr*) &c->remotesock, c->remotelen);
 
-        if (rv < 0) {
-            return rv;
-        }
-
-        // Stream data has been written. Update the in flight list
-        if (rv > 0) {
-            // Send queue is non-empty, so the head was sent
-            c->streams->next->inflight_tail = c->streams->next->inflight_tail->next;
-        }
+    if (rv < 0) {
+        return rv;
     }
 
     return 0;
@@ -409,7 +406,7 @@ static void client_deinit(client *c) {
     client_close_connection(c);
 
     if (c->settings->timing) {
-        printf("Total client uptime: %lld\n", timestamp_ms() - c->initial_ts);
+        printf("Total client uptime: %ld\n", timestamp_ms() - c->initial_ts);
     }
 
     ngtcp2_conn_del(c->conn);
@@ -423,7 +420,6 @@ static void client_deinit(client *c) {
 static void default_settings(client_settings *settings) {
     settings->debug = 0;
     settings->timing = 0;
-    settings->input_fd = STDIN_FILENO;
 }
 
 void print_helpstring() {
@@ -442,9 +438,15 @@ int main(int argc, char **argv){
     int rv;
     signed char opt;
 
-    struct pollfd polls[2];
+    // An array of inputs to read from. They correspond 1-1 with outgoing streams.
+    int open_inputs = 0, input_arrlen = 1;
+    input_source *input_arr = calloc(input_arrlen, sizeof(input_source));
+    if (input_arr == NULL) {
+        fprintf(stderr, "Out of memory\n");
+        return -1;
+    }
 
-    size_t remaining_rand_data;
+    int streams_open = 0, shutdown = 0;
 
     uint8_t payload[1024];
     int payloadlen;
@@ -474,15 +476,37 @@ int main(int argc, char **argv){
                 settings.debug = 1;
                 break;
             case 'f':
-                settings.input_fd = open(optarg, O_RDONLY);
-                if (settings.input_fd == -1) {
-                    fprintf(stderr, "Failed to open file %s\n", optarg);
+                if (open_inputs >= input_arrlen) {
+                    // Need to expand the input array. Double the length
+                    input_arrlen *= 2;
+                    input_arr = realloc(input_arr, input_arrlen);
+                    if (input_arr == NULL) {
+                        fprintf(stderr, "Out of memory\n");
+                        return -1;
+                    }
                 }
-                return 0;
+                input_arr[open_inputs].input_fd = open(optarg, O_RDONLY);
+                if (input_arr[open_inputs].input_fd == -1) {
+                    fprintf(stderr, "Failed to open file %s\n", optarg);
+                    return -1;
+                }
+                input_arr[open_inputs].remaining_data = -1;
+                open_inputs++;
                 break;
             case 's':
-                settings.input_fd = -1;
-                remaining_rand_data = atoi(optarg);
+                if (open_inputs >= input_arrlen) {
+                    // Need to expand the input array. Double the length
+                    input_arrlen *= 2;
+                    input_arr = realloc(input_arr, input_arrlen);
+                    if (input_arr == NULL) {
+                        fprintf(stderr, "Out of memory\n");
+                        return -1;
+                    }
+                }
+                // fd of -1 indicates randomly generated data rather than read from a fd
+                input_arr[open_inputs].input_fd = -1;
+                input_arr[open_inputs].remaining_data = atoi(optarg);
+                open_inputs++;
                 break;
             case 't':
                 settings.timing = 1;
@@ -504,13 +528,18 @@ int main(int argc, char **argv){
 
     if (settings.debug) printf("Successfully initialised client\n");
 
+    // Set up socket and input polling
+    struct pollfd polls[open_inputs+1];
+
+    // Put the UDP fd poll at the end of the array so that the poll array and the input array are zipped
+    polls[open_inputs].fd = c.fd;
+    polls[open_inputs].events = POLLIN;
+
     // Polling a negative fd is defined behaviour that will not ever return on that fd.
-    // If not using input_fd, we can safely leave that fd as -1 and it will not be accessed
-    polls[0].fd = c.fd;
-    polls[1].fd = settings.input_fd;
-
-    polls[0].events = polls[1].events = POLLIN;
-
+    for (int i = 0; i < open_inputs; i++) {
+        polls[i].fd = input_arr[i].input_fd;
+        polls[i].events = POLLIN;
+    }
 
     while (1) {
         if (c.streams->next == NULL) {
@@ -543,11 +572,28 @@ int main(int argc, char **argv){
                 return rv;
             }
         } else {
-            // Stream is open. Wait for either line from STDIN or to recieve a packet
+            if (!streams_open) {
+                // Open a stream for each input in the array
+                for (int i = 0; i < open_inputs; i++) {
+                    // Open a stream for this input
+                    input_arr[i].stream = open_stream(c.conn);
+
+                    if (input_arr[i].stream == NULL) {
+                        fprintf(stderr, "Out of memory\n");
+                    }
+
+                    // Push the new stream onto the front of the client's stream list
+                    input_arr[i].stream->next = c.streams->next;
+                    c.streams->next = input_arr[i].stream;
+                }
+
+                streams_open = 1;
+            }
+
             timeout = get_timeout(c.conn);
             
-            // Timeout may be extremely short
-            rv = poll(polls, 2, timeout);
+            // Wait for an input, a UDP message, or a timeout
+            rv = poll(polls, open_inputs+1, timeout);
 
             if (rv == 0) {
                 // Timeout occured
@@ -558,59 +604,71 @@ int main(int argc, char **argv){
                 continue;
             }
 
-            if (polls[0].revents & POLLIN) {
+            if (polls[open_inputs].revents & POLLIN) {
+                // There's a UDP message. Process it
                 rv = client_read_step(&c);
 
                 if (rv < 0) {
                     return rv;
                 }
-            } else if (polls[1].revents & POLLIN) {
-                // Recieved input data to be transmitted
-                // By shortening the payload buffer by 1, there will be space to null terminate if needed
-                payloadlen = read(settings.input_fd, payload, sizeof(payload));
-
-                if (payloadlen == -1) {
-                    fprintf(stdout, "Failed to read from input: %s\n", strerror(errno));
-                    return -1;
-                }
-
-                if (payloadlen == 0) {
-                    // End of file reached
-                    close(settings.input_fd);
-                    client_deinit(&c);
-                    return 0;
-                }
-
-                rv = enqueue_message(payload, payloadlen, 0, c.streams->next);
-
-
-                if (rv < 0) {
-                    return rv;
-                }
             }
+            
+            // If all inputs are exhausted, shutdown
+            shutdown = 1;
+            // Scan through the inputs and enqueue data to respective streams
+            for (int i = 0; i < open_inputs; i++) {
+                // Search the inputs for available data
+                if (input_arr[i].input_fd == -1 && input_arr[i].remaining_data != 0) {
+                    shutdown = 0;
 
-            if (settings.input_fd == -1) {
-                // We're using generated test data rather than data read from a file descriptor
-                if (remaining_rand_data == 0) {
-                    client_deinit(&c);
-                    return 0;
-                }
-
-                // Generate and add some more data to the send queue
-                payloadlen = remaining_rand_data;
-
-                if (remaining_rand_data > sizeof(payload)) {
+                    // Genereate random data on this input. Remaining data == 0 means generate no more data
                     payloadlen = sizeof(payload);
-                }
 
-                rand_bytes(payload, payloadlen);
+                    if (input_arr[i].remaining_data > 0) {
+                        // Generating finite data
+                        if (input_arr[i].remaining_data < payloadlen) {
+                            // We can fit all remaining data into this packet
+                            payloadlen = input_arr[i].remaining_data;
+                        }
 
-                remaining_rand_data -= payloadlen;
+                        input_arr[i].remaining_data -= payloadlen;
+                    }
 
-                rv = enqueue_message(payload, payloadlen, remaining_rand_data == 0, c.streams->next);
+                    rand_bytes(payload, payloadlen);
 
-                if (rv < 0) {
-                    return rv;
+                    rv = enqueue_message(payload, payloadlen, input_arr[i].remaining_data == 0, input_arr[i].stream);
+
+                    if (rv < 0) {
+                        return rv;
+                    }
+
+                } else if (polls[i].revents & POLLIN) {
+                    shutdown = 0;
+
+                    // Recieved input data to be transmitted
+                    payloadlen = read(polls[i].fd, payload, sizeof(payload));
+
+                    if (payloadlen == -1) {
+                        fprintf(stdout, "Failed to read from input: %s\n", strerror(errno));
+                        return -1;
+                    }
+
+                    if (payloadlen == 0) {
+                        // End of file reached. Stream will be closed when sending a packet with the fin bit set
+                        close(polls[i].fd);
+                        // Ensure that this poll won't trigger again, so we won't enqueue anymore data onto this stream
+                        polls[i].fd = -1;
+                    }
+
+                    // Get the stream to send on. The poll array and the input array are zipped so can access directly
+                    stream* stream_to_send = input_arr[i].stream;
+
+                    // Sending a 0 length stream frame is fine
+                    rv = enqueue_message(payload, payloadlen, payloadlen == 0, stream_to_send);
+
+                    if (rv < 0) {
+                        return rv;
+                    }
                 }
             }
 
@@ -618,6 +676,11 @@ int main(int argc, char **argv){
 
             if (rv < 0) {
                 return rv;
+            }
+
+            if (shutdown) {
+                client_deinit(&c);
+                return 0;
             }
         }
     }

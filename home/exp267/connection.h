@@ -38,6 +38,12 @@ typedef struct _stream {
     struct _stream *next;
 } stream;
 
+typedef struct _stream_multiplex_ctx {
+    stream *last_sent;
+
+    stream *streams_list;
+} stream_multiplex_ctx;
+
 ssize_t prepare_packet(ngtcp2_conn *conn, int64_t stream_id, uint8_t* buf, size_t buflen, ngtcp2_ssize *wdatalen, struct iovec *iov, int fin);
 
 ssize_t prepare_nonstream_packet(ngtcp2_conn *conn, uint8_t *buf, size_t buflen);
@@ -46,7 +52,7 @@ int send_packet(int fd, uint8_t* pkt, size_t pktlen, const struct sockaddr* dest
 
 ssize_t read_message(int fd, uint8_t *buf, size_t buflen, struct sockaddr *remote_addr, socklen_t *remote_addrlen);
 
-ssize_t write_step(ngtcp2_conn *conn, int fd, const data_node *send_queue, struct sockaddr *remote_addr, socklen_t remote_addrlen);
+ssize_t write_step(ngtcp2_conn *conn, int fd, stream *send_stream, struct sockaddr *remote_addr, socklen_t remote_addrlen);
 
 ssize_t send_nonstream_packets(ngtcp2_conn *conn, int fd, int limit, struct sockaddr *remote_addr, socklen_t remote_addrlen);
 
@@ -57,5 +63,7 @@ int handle_timeout(ngtcp2_conn *conn, int fd, struct sockaddr *remote_addr, sock
 int enqueue_message(const uint8_t *payload, size_t payloadlen, int fin, stream *stream);
 
 stream* open_stream(ngtcp2_conn *conn);
+
+stream* multiplex_streams(stream_multiplex_ctx *ctx);
 
 #endif

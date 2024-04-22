@@ -131,7 +131,7 @@ static int server_stream_close_cb(ngtcp2_conn *conn, uint32_t flags, int64_t str
 
     if (s->settings->timing) {
         // Report timing for that stream
-        printf("Stream %ld closed in %lld after %ld bytes\n", stream_id, timestamp_ms() - stream_n->stream_opened, stream_n->stream_offset);
+        printf("Stream %ld closed in %ld after %ld bytes\n", stream_id, timestamp_ms() - stream_n->stream_opened, stream_n->stream_offset);
     }
 
     return stream_close_cb(stream_n, s->streams);
@@ -270,6 +270,17 @@ static int server_init(server *s, char *server_port) {
         return ERROR_OUT_OF_MEMORY;
     }
     s->streams->next = NULL;
+
+
+    s->multiplex_ctx = malloc(sizeof(stream_multiplex_ctx));
+    if (s->multiplex_ctx == NULL) {
+        free(s->streams);
+        return ERROR_OUT_OF_MEMORY;
+    }
+
+    // Initialise the multiplex context
+    // Last sent is initialised to the dummy head
+    s->multiplex_ctx->streams_list = s->multiplex_ctx->last_sent = s->streams;
 
     s->reply_stream = NULL;
 
@@ -457,24 +468,15 @@ static int server_read_step(server *s) {
 static int server_write_step(server *s) {
     int rv;
 
-    if (s->streams->next == NULL) {
-        rv = write_step(s->conn, s->fd, NULL, (struct sockaddr*) &s->remotesock, s->remotelen);
+    stream *stream_to_send;
 
-        if (rv < 0) {
-            return rv;
-        }
-    } else {
-        rv = write_step(s->conn, s->fd, s->streams->next->inflight_tail, (struct sockaddr*) &s->remotesock, s->remotelen);
+    // If there are no streams open, multiplex_streams will return NULL
+    stream_to_send = multiplex_streams(s->multiplex_ctx);
 
-        if (rv < 0) {
-            return rv;
-        }
+    rv = write_step(s->conn, s->fd, stream_to_send, (struct sockaddr*) &s->remotesock, s->remotelen);
 
-        // Stream data has been written. Update the in flight list
-        if (rv > 0) {
-            // Send queue is non-empty, so the head was sent
-            s->streams->next->inflight_tail = s->streams->next->inflight_tail->next;
-        }
+    if (rv < 0) {
+        return rv;
     }
 
     return 0;

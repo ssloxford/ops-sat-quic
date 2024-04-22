@@ -84,7 +84,7 @@ ssize_t read_message(int fd, uint8_t *buf, size_t buflen, struct sockaddr *remot
     return bytes_read;
 }
 
-ssize_t write_step(ngtcp2_conn *conn, int fd, const data_node *send_queue, struct sockaddr* sockaddr, socklen_t sockaddrlen) {
+ssize_t write_step(ngtcp2_conn *conn, int fd, stream *send_stream, struct sockaddr* sockaddr, socklen_t sockaddrlen) {
     // Data and datalen is the data to be written
     // Buf and bufsize is a general use memory allocation (eg. to pass packets to subroutines)
     ssize_t pktlen;
@@ -98,10 +98,10 @@ ssize_t write_step(ngtcp2_conn *conn, int fd, const data_node *send_queue, struc
 
     data_node *pkt_to_send;
     
-    if (send_queue == NULL) {
+    if (send_stream == NULL) {
         pkt_to_send = NULL;
     } else {
-        pkt_to_send = send_queue->next;
+        pkt_to_send = send_stream->inflight_tail->next;
     }
 
     if (pkt_to_send != NULL) {
@@ -113,7 +113,7 @@ ssize_t write_step(ngtcp2_conn *conn, int fd, const data_node *send_queue, struc
 
         // A stream is open, so we will write to the stream
         // Will also add "housekeeping" frames to the packet
-        pktlen = prepare_packet(conn, pkt_to_send->stream_id, buf, sizeof(buf), &stream_framelen, &iov, pkt_to_send->fin_bit);
+        pktlen = prepare_packet(conn, send_stream->stream_id, buf, sizeof(buf), &stream_framelen, &iov, pkt_to_send->fin_bit);
 
         if (pktlen < 0) {
             return pktlen;
@@ -126,6 +126,8 @@ ssize_t write_step(ngtcp2_conn *conn, int fd, const data_node *send_queue, struc
         }
 
         pkt_to_send->time_sent = timestamp_ms();
+
+        send_stream->inflight_tail = pkt_to_send;
     }
 
     // If there are any "housekeeping" frames that didn't fit into the above packet, send them now
@@ -229,7 +231,7 @@ int handle_timeout(ngtcp2_conn *conn, int fd, struct sockaddr *remote_addr, sock
 int enqueue_message(const uint8_t *payload, size_t payloadlen, int fin, stream *stream) {
     uint8_t *pkt_data = malloc(payloadlen);
 
-    if (pkt_data == NULL) {
+    if (pkt_data == NULL && payloadlen > 0) {
         return ERROR_OUT_OF_MEMORY;
     }
 
@@ -241,7 +243,7 @@ int enqueue_message(const uint8_t *payload, size_t payloadlen, int fin, stream *
         return ERROR_OUT_OF_MEMORY;
     }
 
-    // Load the provided data into the allocated node buffer
+    // Load the provided data into the allocated node buffer. Memcpy of payloadlen = 0 is defined as a no-op
     memcpy(pkt_data, payload, payloadlen);
 
     queue_node->payload = pkt_data;
@@ -255,12 +257,12 @@ int enqueue_message(const uint8_t *payload, size_t payloadlen, int fin, stream *
 
     queue_node->fin_bit = fin;
 
-    // Join the values after queue_tail onto the created node
-    // For a true tail node, this will be NULL
+    // Enqueue the created node and update relevant pointers
+    // Insert the queue_node after the send_tail
     queue_node->next = stream->send_tail->next;
-
-    // Add the new node after *queue_tail
     stream->send_tail->next = queue_node;
+    // Update the send tail to track the new node
+    stream->send_tail = queue_node;
 
     return 0;
 }
@@ -297,4 +299,46 @@ stream* open_stream(ngtcp2_conn *conn) {
     }
 
     return stream_n;
+}
+
+stream* multiplex_streams(stream_multiplex_ctx *ctx) {
+    stream *ptr;
+    
+    // Verify that the last_sent stream has not been closed
+    for (ptr = ctx->streams_list; ptr != NULL; ptr = ptr->next) {
+        if (ptr == ctx->last_sent) {
+            // Found the stream in the list
+            break;
+        }
+    }
+
+    if (ptr == NULL) {
+        // The last_sent had been closed. Reset the last_sent
+        ctx->last_sent = ctx->streams_list;
+    }
+
+    for (ptr = ctx->last_sent->next; ptr != ctx->last_sent; ptr = ptr->next) {
+        if (ptr == NULL) {
+            // We've reached the end of the list. Loop around to the front.
+            ptr = ctx->streams_list;
+            // Must continue so the terminatation condition is rechecked and the pointer is advanced to a real stream
+            // If there was no last_sent, dummy header is last sent
+            continue;
+        }
+
+        if (ptr->inflight_tail != ptr->send_tail) {
+            // The send queue for this stream is non-empty
+            break;
+        }
+    }
+
+    if (ptr == ctx->last_sent) {
+        // All stream send queues are empty
+        return NULL;
+    }
+
+    // Update the context ready for next time
+    ctx->last_sent = ptr;
+
+    return ptr;
 }

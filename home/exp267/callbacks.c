@@ -48,23 +48,11 @@ int acked_stream_data_offset_cb(ngtcp2_conn *conn, uint64_t offset, uint64_t dat
     return 0;
 }
 
-int extend_max_local_streams_uni_cb(ngtcp2_conn *conn, stream *stream_list) {
-    stream* stream_n = open_stream(conn);
-
-    if (stream_n == NULL) {
-        return NGTCP2_ERR_CALLBACK_FAILURE;
-    }
-
-    // Insert the newly created stream at the head of the provided stream list
-    stream_n->next = stream_list->next;
-    stream_list->next = stream_n;
-
-    return 0;
-}
-
 int stream_close_cb(stream *stream_n, stream *stream_list) {
     // Deallocate ack/send queue
-    for (data_node *node = stream_n->inflight_head->next; node != NULL; node = stream_n->inflight_head->next) {        
+    for (data_node *node = stream_n->inflight_head->next; node != NULL; node = stream_n->inflight_head->next) {
+        stream_n->inflight_head->next = node->next;
+
         // Free the node
         free(node->payload);
         free(node);

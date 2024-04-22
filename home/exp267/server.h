@@ -38,7 +38,11 @@ typedef struct _server {
 
     int connected;
     
+    // Outgoing streams. Will only be used if the reply settings is set.
+    // Reply_stream informs which outgoing stream to reply to each incoming stream on
     stream *streams;
+    stream_multiplex_ctx *multiplex_ctx;
+    reply_on *reply_stream;
 
     struct sockaddr_storage localsock, remotesock;
     socklen_t locallen, remotelen;
@@ -49,7 +53,6 @@ typedef struct _server {
     server_settings *settings;
 
     uint64_t initial_ts;
-    reply_on *reply_stream;
 } server;
 
 #endif
