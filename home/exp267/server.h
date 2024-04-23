@@ -25,7 +25,7 @@ typedef struct _server_settings {
 typedef struct _reply_on {
     int64_t incoming_stream_id;
 
-    int64_t outgoing_stream_id;
+    stream *reply_stream;
 
     struct _reply_on *next;
 } reply_on;

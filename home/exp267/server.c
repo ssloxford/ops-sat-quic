@@ -39,25 +39,30 @@ static int server_stream_open_cb(ngtcp2_conn *conn, int64_t incoming_stream_id, 
             return NGTCP2_ERR_CALLBACK_FAILURE;
         }
 
-        // Open a stream to reply on and register it in the reply list
-        stream_n = open_stream(conn);
+        if (ngtcp2_conn_get_streams_uni_left(conn)) {
+            // Open a stream to reply on and register it in the reply list
+            stream_n = open_stream(conn);
 
-        if (stream_n == NULL) {
-            free(reply);
-            return NGTCP2_ERR_CALLBACK_FAILURE;
+            if (stream_n == NULL) {
+                free(reply);
+                return NGTCP2_ERR_CALLBACK_FAILURE;
+            }
+
+            // Insert the newly created stream at the head of the provided stream list
+            // Streams has a dummy header
+            stream_n->next = s->streams->next;
+            s->streams->next = stream_n;
+        } else {
+            // We're not able to open any more reply streams. Some will need to share. Simple solution is to put them all on the same stream
+            stream_n = s->streams->next;
         }
 
-        // Insert the newly created stream at the head of the provided stream list
-        // Streams has a dummy header
-        stream_n->next = s->streams->next;
-        s->streams->next = stream_n;
-
         reply->incoming_stream_id = incoming_stream_id;
-        reply->outgoing_stream_id = stream_n->stream_id;
+        reply->reply_stream = stream_n;
 
-        // Add to the front of the reply_streams lookup list. No dummy header node
-        reply->next = s->reply_stream;
-        s->reply_stream = reply;
+        // Add to the front of the reply_streams lookup list. Dummy header node
+        reply->next = s->reply_stream->next;
+        s->reply_stream->next = reply;
     }
 
     return 0;
@@ -79,7 +84,7 @@ static int server_recv_stream_data_cb(ngtcp2_conn *conn, uint32_t flags, int64_t
     if (s->settings->reply) {
         reply_on *reply;
 
-        for (reply = s->reply_stream; reply != NULL; reply = reply->next) {
+        for (reply = s->reply_stream->next; reply != NULL; reply = reply->next) {
             if (reply->incoming_stream_id == stream_id) {
                 // We've found the stream we need to reply on
                 break;
@@ -95,7 +100,7 @@ static int server_recv_stream_data_cb(ngtcp2_conn *conn, uint32_t flags, int64_t
 
         // Search for the stream to reply on in the list
         for (stream_n = s->streams->next; stream_n != NULL; stream_n = stream_n->next) {
-            if (stream_n->stream_id == reply->outgoing_stream_id) {
+            if (stream_n == reply->reply_stream) {
                 break;
             }
         }
@@ -127,14 +132,60 @@ static int server_handshake_completed_cb(ngtcp2_conn *conn, void *user_data) {
 static int server_stream_close_cb(ngtcp2_conn *conn, uint32_t flags, int64_t stream_id, uint64_t app_error_code, void *user_data, void *stream_data) {
     server *s = user_data;
 
-    stream *stream_n = stream_data;
+    if (s->settings->debug) printf("Closing stream %ld\n", stream_id);
+    if (stream_id & 0x01) {
+        // Server initiated stream
+        stream *stream_n = stream_data;
 
-    if (s->settings->timing) {
-        // Report timing for that stream
-        printf("Stream %ld closed in %ld after %ld bytes\n", stream_id, timestamp_ms() - stream_n->stream_opened, stream_n->stream_offset);
+        if (s->settings->timing) {
+            // Report timing for that stream
+            printf("Stream %ld closed in %ld after %ld bytes\n", stream_id, timestamp_ms() - stream_n->stream_opened, stream_n->stream_offset);
+        }
+
+        return stream_close_cb(stream_n, s->streams);
+    } else {
+        // Client initiated stream
+        if (s->settings->reply) {
+            // There's a reply stream we may need to close
+            int can_close_reply = 1;
+            stream *reply_stream = NULL;
+
+            reply_on *prev_ptr = s->reply_stream;
+
+            for (reply_on *ptr = prev_ptr->next; ptr != NULL; ptr = prev_ptr->next) {
+                if (ptr->incoming_stream_id == stream_id) {
+                    // This is the node in the list that needs to be deleted
+                    reply_stream = ptr->reply_stream;
+
+                    prev_ptr->next = ptr->next;
+                    free(ptr);
+                    break;
+                }
+                prev_ptr = ptr;
+            }
+
+            if (reply_stream == NULL) {
+                // We did not find the incoming stream in the list. Non-fatal error
+                fprintf(stderr, "Warning: Tried to close reply stream for %ld. Could not find stream with id %ld\n", stream_id, stream_id);
+                return 0;
+            }
+
+            for (reply_on *ptr = s->reply_stream->next; ptr != NULL; ptr = ptr->next) {
+                if (ptr->reply_stream == reply_stream) {
+                    // The reply stream was shared. We cannot close the stream.
+                    can_close_reply = 0;
+                    break;
+                }
+            }
+            
+            if (can_close_reply) {
+                // Enqueue a 0 length stream frame with fin bit set. When sent, this will close the reply stream.
+                enqueue_message(NULL, 0, 1, reply_stream);
+            }
+        }
     }
 
-    return stream_close_cb(stream_n, s->streams);
+    return 0;
 }
 
 static int server_wolfssl_new(server *s) {
@@ -239,7 +290,7 @@ static int server_resolve_and_bind(server *s, const char *server_port) {
 
     // Resolves the local port, opens an fd and binds it to the address,
     // and updates the local sockaddr and socklen in server
-    rv = resolve_and_process(INADDR_ANY, atoi(server_port), IPPROTO_UDP, 1, (ngtcp2_sockaddr*) &s->localsock, &s->locallen, NULL, NULL);
+    rv = resolve_and_process(htonl(INADDR_ANY), atoi(server_port), IPPROTO_UDP, 1, (ngtcp2_sockaddr*) &s->localsock, &s->locallen, NULL, NULL);
 
     if (rv < 0) {
         return rv;
@@ -282,14 +333,18 @@ static int server_init(server *s, char *server_port) {
     // Last sent is initialised to the dummy head
     s->multiplex_ctx->streams_list = s->multiplex_ctx->last_sent = s->streams;
 
-    s->reply_stream = NULL;
+    // Dummy header
+    s->reply_stream = malloc(sizeof(reply_on));
+    if (s->reply_stream == NULL) {
+        free(s->streams);
+        free(s->multiplex_ctx);
+        return ERROR_OUT_OF_MEMORY;
+    }
+
+    s->reply_stream->next = NULL;
 
     s->locallen = sizeof(s->localsock);
     s->remotelen = sizeof(s->remotesock);
-
-    if (s->settings->timing) {
-        s->initial_ts = timestamp();
-    }
 
     rand_init();
 
@@ -382,6 +437,11 @@ static int server_accept_connection(server *s, uint8_t *buf, size_t buflen, ngtc
     }
 
     s->connected = 1;
+
+    if (s->settings->timing) {
+        s->initial_ts = timestamp_ms();
+    }
+
     return 0;
 }
 

@@ -28,6 +28,10 @@ typedef struct _client {
     // The fd of the UDP socket being used
     int fd;
 
+    // Array of initialised input sources
+    input_source *inputs;
+    size_t inputslen;
+
     // Linked list of open streams, each with their own ack/send queue.
     stream *streams;
     stream_multiplex_ctx *multiplex_ctx;

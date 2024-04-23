@@ -269,6 +269,7 @@ int enqueue_message(const uint8_t *payload, size_t payloadlen, int fin, stream *
 
 stream* open_stream(ngtcp2_conn *conn) {
     stream *stream_n = malloc(sizeof(stream));
+    int64_t stream_id;
 
     if (stream_n == NULL) {
         return NULL;
@@ -290,7 +291,9 @@ stream* open_stream(ngtcp2_conn *conn) {
     stream_n->send_tail->next = NULL;
 
     // Opens a new stream and sets the stream id in the stream struct
-    int rv = ngtcp2_conn_open_uni_stream(conn, &stream_n->stream_id, stream_n);
+    int rv = ngtcp2_conn_open_uni_stream(conn, &stream_id, stream_n);
+
+    stream_n->stream_id = stream_id;
 
     if (rv < 0) {
         free(stream_n->inflight_head);
@@ -317,7 +320,7 @@ stream* multiplex_streams(stream_multiplex_ctx *ctx) {
         ctx->last_sent = ctx->streams_list;
     }
 
-    for (ptr = ctx->last_sent->next; ptr != ctx->last_sent; ptr = ptr->next) {
+    for (ptr = ctx->last_sent->next; ptr != ctx->last_sent;) {
         if (ptr == NULL) {
             // We've reached the end of the list. Loop around to the front.
             ptr = ctx->streams_list;
@@ -330,6 +333,8 @@ stream* multiplex_streams(stream_multiplex_ctx *ctx) {
             // The send queue for this stream is non-empty
             break;
         }
+
+        ptr = ptr->next;
     }
 
     if (ptr == ctx->last_sent) {

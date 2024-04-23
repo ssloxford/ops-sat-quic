@@ -94,7 +94,7 @@ int resolve_and_process(in_addr_t target_host, int target_port, int protocol, in
     sockaddrin.sin_family = AF_INET;
     // Argument to integer. Then host to network
     sockaddrin.sin_port = htons(target_port);
-    // Converts the IP written in target_host into correct type for the sockaddrin and saves into the struct
+    // target_host must be in network order, not host order. Call htonl if needed
     sockaddrin.sin_addr.s_addr = target_host;
 
     fd = socket(AF_INET, sock_type, protocol);
@@ -147,7 +147,7 @@ int resolve_and_process(in_addr_t target_host, int target_port, int protocol, in
 int bind_udp_socket(int *fd, const char *server_port) {
     int rv;
 
-    rv = resolve_and_process(INADDR_ANY, atoi(server_port), IPPROTO_UDP, 1, NULL, NULL, NULL, NULL);
+    rv = resolve_and_process(htonl(INADDR_ANY), atoi(server_port), IPPROTO_UDP, 1, NULL, NULL, NULL, NULL);
 
     if (rv  < 0) {
         return rv;

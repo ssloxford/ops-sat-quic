@@ -54,7 +54,7 @@ static int connect_tcp_socket(int *fd, char *target_ip, char *target_port, struc
     }
 
     // Opens TCP socket and connects to localhost:target_port, saving the sockaddr to remoteaddr
-    rv = resolve_and_process(inaddr.s_addr, atoi(target_port), IPPROTO_UDP, 0, NULL, NULL, remoteaddr, remoteaddrlen);
+    rv = resolve_and_process(inaddr.s_addr, atoi(target_port), IPPROTO_TCP, 0, NULL, NULL, remoteaddr, remoteaddrlen);
 
     if (rv < 0) {
         return rv;
@@ -67,7 +67,7 @@ static int connect_tcp_socket(int *fd, char *target_ip, char *target_port, struc
 static int bind_and_accept_tcp_socket(int *fd, char *server_port, struct sockaddr *remoteaddr, socklen_t *remoteaddrlen) {
     int rv, listen_fd;
 
-    rv = resolve_and_process(INADDR_ANY, atoi(server_port), IPPROTO_TCP, 1, NULL, NULL, NULL, NULL);
+    rv = resolve_and_process(htonl(INADDR_ANY), atoi(server_port), IPPROTO_TCP, 1, NULL, NULL, NULL, NULL);
 
     if (rv < 0) {
         return rv;
@@ -256,7 +256,7 @@ static int handle_spp(int udp_fd, uint8_t *buf, size_t pktlen, incomplete_packet
     return 0;
 }
 
-static int handle_udp_packet(int tcp_fd, uint8_t *buf, size_t buflen, size_t pktlen, uint16_t spp_count, uint8_t udp_count, int *packets_sent) {
+static int handle_udp_packet(int tcp_fd, uint8_t *buf, size_t buflen, size_t pktlen, uint16_t spp_count, uint8_t udp_count, int *packets_sent, const struct sockaddr* remote_addr, socklen_t remote_addrlen, int debug) {
     int rv, packets_made;
     size_t bytes_to_send;
 
@@ -273,13 +273,16 @@ static int handle_udp_packet(int tcp_fd, uint8_t *buf, size_t buflen, size_t pkt
         rv = serialise_spp(buf, buflen, &packets[i]);
 
         if (rv < 0) {
+            fprintf(stderr, "SPP bridge: Error serialising SPP\n");
             return rv;
         }
 
         bytes_to_send = SPP_TOTAL_LENGTH(packets[i].primary_header.packet_data_length);
 
+        if (debug) printf("Sending SPP of length %ld\n", bytes_to_send);
+
         // Potentially blocking call if remote not able to recieve data
-        rv = send(tcp_fd, buf, bytes_to_send, 0);
+        rv = sendto(tcp_fd, buf, bytes_to_send, 0, remote_addr, remote_addrlen);
 
         if (rv == -1) {
             fprintf(stderr, "SPP bridge: Send: %s\n", strerror(errno));
@@ -401,13 +404,10 @@ int main(int argc, char **argv) {
     if (tcp_client) {
         // Have it initiate tcp connection
         rv = connect_tcp_socket(&tcp_fd, "127.0.0.1", tcp_target_port, (struct sockaddr*) &tcp_remote, &tcp_remotelen);
-
     } else {
         // Opens a socket to listen for TCP connections on and binds it to TCP port
         // Must then listen on that port and accept 
         rv = bind_and_accept_tcp_socket(&tcp_fd, tcp_target_port, (struct sockaddr*) &tcp_remote, &tcp_remotelen);
-
-        if (debug) printf("SPP bridge: Successfully accepted TCP connection\n");
     }
     
     if (rv < 0) {
@@ -452,7 +452,7 @@ int main(int argc, char **argv) {
             }
 
             // UDP packet recieved
-            handle_udp_packet(tcp_fd, buf, sizeof(buf), rv, spp_count, udp_count, &packets_sent);
+            handle_udp_packet(tcp_fd, buf, sizeof(buf), rv, spp_count, udp_count, &packets_sent, (struct sockaddr*) &tcp_remote, tcp_remotelen, debug);
             udp_count++;
             spp_count += packets_sent;
             if (spp_count >= SPP_SEQ_COUNT_MODULO) spp_count -= SPP_SEQ_COUNT_MODULO;
@@ -460,7 +460,7 @@ int main(int argc, char **argv) {
             if (debug) printf("SPP bridge: TCP message recieved\n");
 
             // Wait to be able to read a full header
-            rv = recv(tcp_fd, buf, SPP_HEADER_LEN, MSG_WAITALL);
+            rv = recv(tcp_fd, buf, SPP_PRIM_HEADER_LEN, MSG_WAITALL);
 
             if (rv == 0) {
                 printf("SPP bridge: Remote shutdown TCP connection\n");
@@ -471,10 +471,14 @@ int main(int argc, char **argv) {
                 continue;
             }
 
-            spp_data_length = get_spp_data_length(buf);
+            if (debug) printf("SPP bridge: Successfully read header of %d bytes\n", rv);
+
+            spp_data_length = get_spp_data_length(buf) + 1;
 
             // Wait to recieve the body of the SPP, then process it
-            rv = recv(tcp_fd, buf+SPP_HEADER_LEN, spp_data_length, MSG_WAITALL);
+            rv = recv(tcp_fd, buf+SPP_PRIM_HEADER_LEN, spp_data_length, MSG_WAITALL);
+
+            if (debug) printf("SPP bridge: Packet of length %ld in total successfully read\n", spp_data_length+SPP_PRIM_HEADER_LEN);
 
             if (rv == 0) {
                 printf("SPP bridge: Remote shutdown TCP connection\n");
@@ -486,7 +490,9 @@ int main(int argc, char **argv) {
             }
 
             // TCP packet recieved
-            rv = handle_spp(udp_fd, buf, rv+SPP_HEADER_LEN, &incomp_pkts, (struct sockaddr*) &udp_remote, udp_remotelen, debug);
+            rv = handle_spp(udp_fd, buf, rv+SPP_PRIM_HEADER_LEN, &incomp_pkts, (struct sockaddr*) &udp_remote, udp_remotelen, debug);
+
+            if (debug) printf("Successfully handled spp\n");
 
             if (rv < 0) {
                 if (rv == ERROR_SOCKET) {

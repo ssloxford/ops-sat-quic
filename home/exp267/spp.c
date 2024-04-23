@@ -89,7 +89,12 @@ int serialise_spp(uint8_t *buf, size_t buflen, const SPP *spp) {
 }
 
 size_t get_spp_data_length(const uint8_t *buf) {
-    return ((buf[4] << 8) | buf[5]) + 1;
+    uint16_t size = 0;
+
+    size |= (buf[4] << 8);
+    size |= buf[5];
+
+    return size;
 }
 
 int deserialise_spp(const uint8_t *buf, SPP *spp) {
@@ -102,6 +107,8 @@ int deserialise_spp(const uint8_t *buf, SPP *spp) {
 
     spp->primary_header.pkt_seq_ctrl.sequence_flags = 0x03 & (buf[2] >> 6);
     spp->primary_header.pkt_seq_ctrl.sequence_count = 0x3fff & ((buf[2] << 8) | buf[3]);
+
+    spp->primary_header.packet_data_length = get_spp_data_length(buf);
 
     // Secondary header
     spp->secondary_header.udp_packet_num = 0xff & buf[6];
