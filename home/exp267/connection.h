@@ -1,7 +1,7 @@
 #ifndef CONNECTION_H
 #define CONNECTION_H
 
-#define SERVER_PORT "11111"
+#define DEFAULT_PORT "11120"
 #define DEFAULT_IP "127.0.0.1"
 
 #include <ngtcp2/ngtcp2.h>

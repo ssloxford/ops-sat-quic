@@ -15,7 +15,8 @@
 #include <arpa/inet.h>
 #include <limits.h>
 
-#define TCP_DEFAULT_PORT "11112"
+#define TCP_DEFAULT_PORT "4096"
+#define UDP_DEFAULT_PORT "11120"
 // Destroy the packet if it's incomplete and no new fragment has been recieved in the last 30 seconds
 #define TIMEOUT_MS (30 * 1000)
 
@@ -473,6 +474,7 @@ int main(int argc, char **argv) {
 
             if (debug) printf("SPP bridge: Successfully read header of %d bytes\n", rv);
 
+            // Data length field is one less than the actual length of the field
             spp_data_length = get_spp_data_length(buf) + 1;
 
             // Wait to recieve the body of the SPP, then process it

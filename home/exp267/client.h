@@ -6,6 +6,8 @@
 
 #include "connection.h"
 
+#define MAX_SEND_QUEUE 3
+
 typedef struct _client_settings {
     int debug;
 

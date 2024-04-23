@@ -564,7 +564,7 @@ int main(int argc, char **argv) {
     int rv;
     int8_t opt;
 
-    char *server_port = SERVER_PORT;
+    char *server_port = DEFAULT_PORT;
 
     struct pollfd conn_poll;
 

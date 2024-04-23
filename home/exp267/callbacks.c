@@ -24,7 +24,7 @@ int acked_stream_data_offset_cb(ngtcp2_conn *conn, uint64_t offset, uint64_t dat
                 // Report total time in flight of this packet
                 delta = timestamp_ms() - ptr->time_sent;
 
-                printf("Stream %"PRId64": Packet at offset %"PRIu64" acknowledged. Total time inflight: %"PRIu64" ms\n", stream->stream_id, offset, delta);
+                printf("Stream %"PRId64": Packet of length %"PRIu64" at offset %"PRIu64" acknowledged. Total time inflight: %"PRIu64" ms\n", stream->stream_id, datalen, offset, delta);
             }
 
             free(ptr->payload);

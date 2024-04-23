@@ -337,7 +337,7 @@ stream* multiplex_streams(stream_multiplex_ctx *ctx) {
         ptr = ptr->next;
     }
 
-    if (ptr == ctx->last_sent) {
+    if (ptr == ctx->last_sent && ptr->inflight_tail == ptr->send_tail) {
         // All stream send queues are empty
         return NULL;
     }

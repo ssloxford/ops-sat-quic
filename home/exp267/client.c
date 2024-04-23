@@ -36,7 +36,7 @@ static int client_stream_close_cb(ngtcp2_conn *conn, uint32_t flags, int64_t str
 
         if (c->settings->timing) {
             // Report timing for that stream
-            printf("Stream %ld closed in %ld after %ld bytes\n", stream_id, timestamp_ms() - stream_n->stream_opened, stream_n->stream_offset);
+            printf("Stream %"PRId64" closed in %"PRIu64" after %"PRIu64" bytes\n", stream_id, timestamp_ms() - stream_n->stream_opened, stream_n->stream_offset);
         }
 
         return stream_close_cb(stream_n, c->streams);
@@ -59,7 +59,7 @@ static int client_handshake_completed_cb(ngtcp2_conn *conn, void *user_data) {
 static int client_extend_max_local_streams_uni_cb(ngtcp2_conn *conn, uint64_t max_streams, void *user_data) {
     client *c = user_data;
 
-    if (c->settings->debug) printf("Client opening new streams. Max streams: %lu\n", max_streams);
+    if (c->settings->debug) printf("Client opening new streams. Max streams: %"PRIu64"\n", max_streams);
 
     for (int i = 0; i < c->inputslen; i++) {
         if (i < max_streams) {
@@ -327,6 +327,8 @@ static int client_generate_data(client *c) {
     uint8_t payload[1024];
     size_t payloadlen;
 
+    int to_enqueue;
+
     // Scan through the inputs and enqueue data to respective streams
     for (int i = 0; i < c->inputslen; i++) {
         if (c->inputs[i].stream == NULL) {
@@ -334,63 +336,81 @@ static int client_generate_data(client *c) {
             continue;
         }
 
-        if (c->inputs[i].remaining_data == 0) {
-            // Input is closed
-            continue;
+        data_node *node = c->inputs[i].stream->inflight_tail;
+
+        // Find out how many nodes to add to get to max length
+        for (to_enqueue = MAX_SEND_QUEUE; to_enqueue > 0; to_enqueue--) {
+            if (node == c->inputs[i].stream->inflight_tail) {
+                // We've reached the end of the queue
+                break;
+            }
+
+            // Node will never be null, since if it's the inflight_tail, loop would have broken
+            node = node->next;
         }
 
-        // Search the inputs for available data
-        if (c->inputs[i].input_fd == -1) {
-            // Genereate random data on this input. Remaining data == 0 means generate no more data
+        for (int j = 0; j < to_enqueue; j++) {
+            // Add to the queue up to queue capacity
+            if (c->inputs[i].remaining_data == 0) {
+                // Input is closed
+                break;
+            }
 
-            payloadlen = sizeof(payload);
+            // Search the inputs for available data
+            if (c->inputs[i].input_fd == -1) {
 
-            if (c->inputs[i].remaining_data > 0) {
-                // Generating finite data
-                if (c->inputs[i].remaining_data < payloadlen) {
-                    // We can fit all remaining data into this packet
-                    payloadlen = c->inputs[i].remaining_data;
+                // Genereate random data on this input. Remaining data == 0 means generate no more data
+
+                payloadlen = sizeof(payload);
+
+                if (c->inputs[i].remaining_data > 0) {
+                    // Generating finite data
+                    if (c->inputs[i].remaining_data < payloadlen) {
+                        // We can fit all remaining data into this packet
+                        payloadlen = c->inputs[i].remaining_data;
+                    }
+
+                    c->inputs[i].remaining_data -= payloadlen;
                 }
 
-                c->inputs[i].remaining_data -= payloadlen;
-            }
+                rand_bytes(payload, payloadlen);
 
-            rand_bytes(payload, payloadlen);
+                rv = enqueue_message(payload, payloadlen, c->inputs[i].remaining_data == 0, c->inputs[i].stream);
 
-            rv = enqueue_message(payload, payloadlen, c->inputs[i].remaining_data == 0, c->inputs[i].stream);
-
-            if (rv < 0) {
-                return rv;
-            }
-        } else {
-            // Valid fd. Try reading from it. Special case for stdin
-            if (c->inputs[i].input_fd == STDIN_FILENO) {
-                // TODO - Implement this
-                continue;
+                if (rv < 0) {
+                    return rv;
+                }
             } else {
-                payloadlen = read(c->inputs[i].input_fd, payload, sizeof(payload));
-            }
+                // Fd is for a file or input stream
+                if (c->inputs[i].input_fd == STDIN_FILENO) {
+                    // The input is stdin, which would block if we called read
+                    // TODO - Implement this
+                    break;
+                } else {
+                    payloadlen = read(c->inputs[i].input_fd, payload, sizeof(payload));
+                }
 
-            if (payloadlen == -1) {
-                fprintf(stdout, "Failed to read from fd %d: %s\n", c->inputs[i].input_fd, strerror(errno));
-                return -1;
-            }
+                if (payloadlen == -1) {
+                    fprintf(stdout, "Failed to read from fd %d: %s\n", c->inputs[i].input_fd, strerror(errno));
+                    return -1;
+                }
 
-            if (payloadlen == 0) {
-                // End of file reached. Stream will be closed when sending a packet with the fin bit set
-                close(c->inputs[i].input_fd);
-                // Close this input
-                c->inputs[i].remaining_data = 0;
-            }
+                if (payloadlen == 0) {
+                    // End of file reached. Stream will be closed when sending a packet with the fin bit set
+                    close(c->inputs[i].input_fd);
+                    // Close this input. This will mean this input will be skipped when calling enqueue
+                    c->inputs[i].remaining_data = 0;
+                }
 
-            // Get the stream to send on. The poll array and the input array are zipped so can access directly
-            stream* stream_to_send = c->inputs[i].stream;
+                // Get the stream to send on. The poll array and the input array are zipped so can access directly
+                stream* stream_to_send = c->inputs[i].stream;
 
-            // Sending a 0 length stream frame is fine
-            rv = enqueue_message(payload, payloadlen, payloadlen == 0, stream_to_send);
+                // Sending a 0 length stream frame is fine
+                rv = enqueue_message(payload, payloadlen, payloadlen == 0, stream_to_send);
 
-            if (rv < 0) {
-                return rv;
+                if (rv < 0) {
+                    return rv;
+                }
             }
         }
     }
@@ -525,7 +545,7 @@ static void client_deinit(client *c) {
     client_close_connection(c);
 
     if (c->settings->timing) {
-        printf("Total client uptime: %ldms\n", timestamp_ms() - c->initial_ts);
+        printf("Total client uptime: %"PRIu64"ms\n", timestamp_ms() - c->initial_ts);
     }
 
     ngtcp2_conn_del(c->conn);
@@ -568,7 +588,7 @@ int main(int argc, char **argv){
     int shutdown = 0;
 
     char *server_ip = DEFAULT_IP;
-    char *server_port = SERVER_PORT;
+    char *server_port = DEFAULT_PORT;
 
     int timeout;
 
@@ -685,6 +705,8 @@ int main(int argc, char **argv){
                 return rv;
             }
         } else {
+            client_generate_data(&c);
+
             timeout = get_timeout(c.conn);
             
             // Wait for an input, a UDP message, or a timeout
