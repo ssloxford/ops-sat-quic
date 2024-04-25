@@ -361,8 +361,20 @@ static int server_init(server *s, char *server_port) {
 static int server_close_connection(server *s) {
     s->connected = 0;
 
-    free(s->streams->next);
-    s->streams->next = NULL;
+    // The loop repeatedly pops streams from the front of the list until they're all deleted
+    for (stream *stream = s->streams->next; stream != NULL; stream = s->streams->next) {
+        // Deallocate the memory associated with this stream and remove it from the list
+        stream_close_cb(stream, s->streams);
+    }
+
+    // Delete all the reply on nodes
+    for (reply_on *reply = s->reply_stream->next; reply != NULL; reply = s->reply_stream->next) {
+        s->reply_stream->next = reply->next;
+        free(reply);
+    }
+
+    // Reset the stream multiplexing context
+    s->multiplex_ctx->last_sent = s->streams;
 
     ngtcp2_conn_del(s->conn);
 
@@ -408,8 +420,11 @@ static int server_accept_connection(server *s, uint8_t *buf, size_t buflen, ngtc
     params.initial_max_stream_data_uni = BUF_SIZE;
     // Will send up to BUF_SIZE bytes at a time
     params.initial_max_data = BUF_SIZE;
-
     params.max_udp_payload_size = MAX_UDP_PAYLOAD;
+    // The server can recieve up to 1MB in total on each connection
+    params.initial_max_data = 1024 * 1024;
+    // Each stream can carry up to a 16KB before needing to be reset
+    params.initial_max_stream_data_uni = 16 * 1024;
 
     // Server DCID is client SCID. 
     ngtcp2_cid scid;
@@ -515,7 +530,7 @@ static int server_read_step(server *s) {
         }
     }
 
-    // Send ACK packets
+    // Send ACK packets. No limit
     rv = send_nonstream_packets(s->conn, s->fd, -1, (struct sockaddr*) &s->remotesock, s->remotelen);
 
     if (rv < 0) {

@@ -64,7 +64,7 @@ int stream_close_cb(stream *stream_n, stream *stream_list) {
     stream *prev_stream = stream_list;
 
     // Linear search for the stream in the queue so that the queue can be rejoined around it
-    for (stream *this_stream = prev_stream->next; this_stream == stream_n; this_stream = prev_stream->next) {
+    for (stream *this_stream = prev_stream->next; this_stream != stream_n; this_stream = prev_stream->next) {
         prev_stream = this_stream;
     }
 

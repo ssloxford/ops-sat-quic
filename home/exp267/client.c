@@ -30,13 +30,15 @@ static int client_stream_close_cb(ngtcp2_conn *conn, uint32_t flags, int64_t str
     // A local stream has been closed
     client *c = user_data;
 
-    if (stream_id & 0x01) {
-        // Client initiate stream. No need to do anything if it's a server-initiated stream
+    if (c->settings->debug) printf("Closing stream with id %"PRId64"\n", stream_id);
+
+    if (!(stream_id & 0x01)) {
+        // Client initiated stream. No need to do anything if it's a server-initiated stream
         stream *stream_n = stream_data;
 
         if (c->settings->timing) {
             // Report timing for that stream
-            printf("Stream %"PRId64" closed in %"PRIu64" after %"PRIu64" bytes\n", stream_id, timestamp_ms() - stream_n->stream_opened, stream_n->stream_offset);
+            printf("Stream %"PRId64" closed in %"PRIu64"ms after %"PRIu64" bytes\n", stream_id, timestamp_ms() - stream_n->stream_opened, stream_n->stream_offset);
         }
 
         return stream_close_cb(stream_n, c->streams);
@@ -340,7 +342,7 @@ static int client_generate_data(client *c) {
 
         // Find out how many nodes to add to get to max length
         for (to_enqueue = MAX_SEND_QUEUE; to_enqueue > 0; to_enqueue--) {
-            if (node == c->inputs[i].stream->inflight_tail) {
+            if (node == c->inputs[i].stream->send_tail) {
                 // We've reached the end of the queue
                 break;
             }
@@ -425,7 +427,7 @@ static int client_write_step(client *c) {
 
     if (c->settings->debug) printf("Starting write step\n");
 
-    rv = client_generate_data(c);
+    // rv = client_generate_data(c);
 
     // If there are no streams open, multiplex_streams will return NULL
     stream_to_send = multiplex_streams(c->multiplex_ctx);
@@ -524,7 +526,6 @@ static int client_close_connection(client *c) {
 
     ngtcp2_tstamp ts = timestamp();
 
-    // TODO - ERR_NOBUF on this call after exchanging data frames. See docs https://nghttp2.org/ngtcp2/ngtcp2_conn_write_connection_close.html
     pktlen = ngtcp2_conn_write_connection_close(c->conn, &ps.path, NULL, buf, BUF_SIZE, &ccerr, ts);
 
     if (pktlen < 0) {
@@ -566,7 +567,7 @@ void print_helpstring() {
     printf("-i [ip]: Specifies IP to connect to. Default localhost\n");
     printf("-p [port]: Specifies port to connect to. Default 11111\n");
     printf("-f [file]: Specifies source of transmission data. Default stdin\n");
-    printf("-s [bytes]: Generate and send [bytes] random bytes. Negative number for infinite bytes. Cannot be used with -f\n");
+    printf("-s [bytes]: Generate and send [bytes] random bytes. Empty for infinite data. Cannot be used with -f\n");
     printf("-t: Enable timing and reporting\n");
     printf("-d: Enable debug printing\n");
 }
@@ -585,8 +586,6 @@ int main(int argc, char **argv){
         return -1;
     }
 
-    int shutdown = 0;
-
     char *server_ip = DEFAULT_IP;
     char *server_port = DEFAULT_PORT;
 
@@ -597,7 +596,7 @@ int main(int argc, char **argv){
 
     c.settings = &settings;
 
-    while ((opt = getopt(argc, argv, "hdti:p:f:s:")) != -1) {
+    while ((opt = getopt(argc, argv, "hdti:p:f:s::")) != -1) {
         switch (opt) {
             case 'h':
                 print_helpstring();
@@ -645,7 +644,11 @@ int main(int argc, char **argv){
                 }
                 // fd of -1 indicates randomly generated data rather than read from a fd
                 inputs[open_inputs].input_fd = -1;
-                inputs[open_inputs].remaining_data = atoi(optarg);
+                if (optarg == 0) {
+                    inputs[open_inputs].remaining_data = -1;
+                } else {
+                    inputs[open_inputs].remaining_data = atoi(optarg);
+                }
                 open_inputs++;
                 break;
             case 't':
@@ -675,7 +678,7 @@ int main(int argc, char **argv){
     poll_fd.events = POLLIN;
 
     while (1) {
-        if (c.streams->next == NULL) {
+        if (!ngtcp2_conn_get_handshake_completed(c.conn)) {
             // Send handshake data
             rv = client_write_step(&c);
 
@@ -705,6 +708,12 @@ int main(int argc, char **argv){
                 return rv;
             }
         } else {
+            if (c.streams->next == NULL) {
+                // All streams are closed. We can close the connection
+                client_deinit(&c);
+                return 0;
+            }
+
             client_generate_data(&c);
 
             timeout = get_timeout(c.conn);
@@ -736,11 +745,6 @@ int main(int argc, char **argv){
                     continue;
                 }
                 return rv;
-            }
-
-            if (shutdown) {
-                client_deinit(&c);
-                return 0;
             }
         }
     }

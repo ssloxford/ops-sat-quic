@@ -38,10 +38,11 @@ ssize_t prepare_packet(ngtcp2_conn *conn, int64_t stream_id, uint8_t* buf, size_
         return bytes_written;
     }
 
+    // Manages the timer for when the packet can be sent. If it's too early, no packet will have been written and a timeout will send it
     ngtcp2_conn_update_pkt_tx_time(conn, ts);
 
     if (bytes_written == 0) {
-        // fprintf(stderr, "Warning: Buffer to prepare packet into too small or packet is congestion limited\n");
+        // fprintf(stderr, "Warning: Packet is congestion limited\n");
         return ERROR_NO_NEW_MESSAGE;
     }
 
@@ -116,6 +117,12 @@ ssize_t write_step(ngtcp2_conn *conn, int fd, stream *send_stream, struct sockad
         pktlen = prepare_packet(conn, send_stream->stream_id, buf, sizeof(buf), &stream_framelen, &iov, pkt_to_send->fin_bit);
 
         if (pktlen < 0) {
+            if (pktlen == NGTCP2_ERR_STREAM_DATA_BLOCKED) {
+                // This stream has reached maximum capacity (according to remote max stream data parameter)
+                // We should sent a fin bit on this stream, open a new one, and copy the send queue (with updated offsets)
+                // TODO - Implement this
+                return pktlen;
+            }
             return pktlen;
         }
 
