@@ -350,6 +350,8 @@ int main(int argc, char **argv) {
     char *udp_target_port, *tcp_target_port = TCP_DEFAULT_PORT;
     int tcp_client = 0, udp_client = 0, udp_port_set = 0, udp_remote_set = 0, debug = 0;
 
+    uint64_t ts = timestamp_ms();
+
     // Process option flags
     while ((opt = getopt(argc, argv, "htp:q:ud")) != -1) {
         switch (opt){
@@ -423,6 +425,8 @@ int main(int argc, char **argv) {
 
     polls[0].events = polls[1].events = POLLIN;
 
+    if (debug) printf("Intialisation took %"PRIu64"ms\n", timestamp_ms() - ts);
+
     for (;;) {
         if (udp_remote_set) {
             // Wait for either connection to have data
@@ -452,11 +456,13 @@ int main(int argc, char **argv) {
                 continue;
             }
 
+            ts = timestamp_ms();
             // UDP packet recieved
             handle_udp_packet(tcp_fd, buf, sizeof(buf), rv, spp_count, udp_count, &packets_sent, (struct sockaddr*) &tcp_remote, tcp_remotelen, debug);
             udp_count++;
             spp_count += packets_sent;
             if (spp_count >= SPP_SEQ_COUNT_MODULO) spp_count -= SPP_SEQ_COUNT_MODULO;
+            if (debug) printf("Handling UDP packet took %"PRIu64"ms\n", timestamp_ms() - ts);
         } else if (polls[1].revents & POLLIN) {
             if (debug) printf("SPP bridge: TCP message recieved\n");
 
@@ -491,10 +497,11 @@ int main(int argc, char **argv) {
                 continue;
             }
 
+            ts = timestamp_ms();
             // TCP packet recieved
             rv = handle_spp(udp_fd, buf, rv+SPP_PRIM_HEADER_LEN, &incomp_pkts, (struct sockaddr*) &udp_remote, udp_remotelen, debug);
 
-            if (debug) printf("Successfully handled spp\n");
+            if (debug) printf("Handling SPP took %"PRIu64"ms\n", timestamp_ms() - ts);
 
             if (rv < 0) {
                 if (rv == ERROR_SOCKET) {

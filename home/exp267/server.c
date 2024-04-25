@@ -282,6 +282,7 @@ static int server_settings_init(ngtcp2_callbacks *callbacks, ngtcp2_settings *se
     if (debug) {
         settings->log_printf = debug_log; // Allows ngtcp2 debug
     }
+
     return 0;
 }
 
@@ -358,7 +359,7 @@ static int server_init(server *s, char *server_port) {
     return 0;
 }
 
-static int server_close_connection(server *s) {
+static int server_drop_connection(server *s) {
     s->connected = 0;
 
     // The loop repeatedly pops streams from the front of the list until they're all deleted
@@ -415,16 +416,18 @@ static int server_accept_connection(server *s, uint8_t *buf, size_t buflen, ngtc
     params.original_dcid_present = 1;
 
     // Allow up to 3 incoming unidirectional streams
-    params.initial_max_streams_uni = 3;
+    params.initial_max_streams_uni = 8;
     // Can accept up to BUF_SIZE bytes at a time on uni streams
     params.initial_max_stream_data_uni = BUF_SIZE;
     // Will send up to BUF_SIZE bytes at a time
     params.initial_max_data = BUF_SIZE;
     params.max_udp_payload_size = MAX_UDP_PAYLOAD;
-    // The server can recieve up to 1MB in total on each connection
-    params.initial_max_data = 1024 * 1024;
-    // Each stream can carry up to a 16KB before needing to be reset
-    params.initial_max_stream_data_uni = 16 * 1024;
+    // The server can recieve up to 8MB in total on each connection
+    params.initial_max_data = 8 * 1024 * 1024;
+    // Each stream can carry up to a 1MB before needing to be reset
+    params.initial_max_stream_data_uni = 8 * 1024 * 1024;
+    // Idle timeout is one minute
+    params.max_idle_timeout = 60*NGTCP2_SECONDS;
 
     // Server DCID is client SCID. 
     ngtcp2_cid scid;
@@ -468,6 +471,8 @@ static int server_read_step(server *s) {
     uint8_t buf[BUF_SIZE];
 
     ssize_t pktlen;
+
+    if (s->settings->debug) printf("Starting read step\n");
 
     for (;;) {
         pktlen = read_message(s->fd, buf, sizeof(buf), (struct sockaddr*) &s->remotesock, &s->remotelen);
@@ -518,7 +523,7 @@ static int server_read_step(server *s) {
         if (rv < 0) {
             if (rv == NGTCP2_ERR_DRAINING) {
                 // Client has closed it's connection
-                server_close_connection(s);
+                server_drop_connection(s);
                 return ERROR_DRAINING_STATE;
             }
             fprintf(stderr, "Failed to read packet: %s\n", ngtcp2_strerror(rv));
@@ -545,6 +550,8 @@ static int server_write_step(server *s) {
 
     stream *stream_to_send;
 
+    if (s->settings->debug) printf("Starting write step\n");
+
     // If there are no streams open, multiplex_streams will return NULL
     stream_to_send = multiplex_streams(s->multiplex_ctx);
 
@@ -553,6 +560,8 @@ static int server_write_step(server *s) {
     if (rv < 0) {
         return rv;
     }
+
+    if (s->settings->debug) printf("Successfully completed write step\n");
 
     return 0;
 }
@@ -643,6 +652,8 @@ int main(int argc, char **argv) {
             timeout = -1;
         }
 
+        if (s.settings->debug) printf("Timeout: %d\n", timeout);
+
         // Waits for the fd saved to the server to be ready to read. No timeout
         rv = poll(&conn_poll, 1, timeout);
 
@@ -652,7 +663,10 @@ int main(int argc, char **argv) {
         }
 
         if (rv == 0) {
-            handle_timeout(s.conn, s.fd, (struct sockaddr*) &s.remotesock, s.remotelen);
+            rv = handle_timeout(s.conn, s.fd, (struct sockaddr*) &s.remotesock, s.remotelen);
+            if (rv == ERROR_DROP_CONNECTION) {
+                server_drop_connection(&s);
+            }
             continue;
         }
 

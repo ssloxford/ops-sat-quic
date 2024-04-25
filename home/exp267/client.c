@@ -152,8 +152,6 @@ static int client_ngtcp2_init(client *c, char* server_ip, char *server_port) {
 
     int rv;
 
-    // Copied from https://github.com/ngtcp2/ngtcp2/blob/main/examples/simpleclient.c
-    // Modified where noted
     ngtcp2_callbacks callbacks = {
         ngtcp2_crypto_client_initial_cb,
         NULL, /* recv_client_initial */
@@ -210,7 +208,7 @@ static int client_ngtcp2_init(client *c, char* server_ip, char *server_port) {
 
     ngtcp2_transport_params_default(&params);
 
-    params.initial_max_streams_uni = 3;
+    params.initial_max_streams_uni = 8;
     params.initial_max_stream_data_uni = BUF_SIZE;
     params.initial_max_data = BUF_SIZE;
     params.max_udp_payload_size = MAX_UDP_PAYLOAD;
@@ -438,6 +436,8 @@ static int client_write_step(client *c) {
         return rv;
     }
 
+    if (c->settings->debug) printf("Successfully completed write step\n");
+
     return 0;
 }
 
@@ -644,7 +644,7 @@ int main(int argc, char **argv){
                 }
                 // fd of -1 indicates randomly generated data rather than read from a fd
                 inputs[open_inputs].input_fd = -1;
-                if (optarg == 0) {
+                if (optarg == NULL) {
                     inputs[open_inputs].remaining_data = -1;
                 } else {
                     inputs[open_inputs].remaining_data = atoi(optarg);
@@ -688,6 +688,8 @@ int main(int argc, char **argv){
 
             timeout = get_timeout(c.conn);
 
+            if (c.settings->debug) printf("Timeout: %d\n", timeout);
+
             // Wait for there to be a UDP packet available
             rv = poll(&poll_fd, 1, timeout);
 
@@ -718,6 +720,8 @@ int main(int argc, char **argv){
 
             timeout = get_timeout(c.conn);
             
+            if (c.settings->debug) printf("Timeout: %d\n", timeout);
+
             // Wait for an input, a UDP message, or a timeout
             rv = poll(&poll_fd, 1, timeout);
 

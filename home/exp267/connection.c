@@ -221,10 +221,10 @@ int handle_timeout(ngtcp2_conn *conn, int fd, struct sockaddr *remote_addr, sock
     // Basically just adjusts internal state to inform writev_stream of what to do next
     rv = ngtcp2_conn_handle_expiry(conn, timestamp());
 
-    if (rv == NGTCP2_ERR_IDLE_CLOSE) {
+    if (rv == NGTCP2_ERR_IDLE_CLOSE || rv == NGTCP2_ERR_HANDSHAKE_TIMEOUT) {
         return ERROR_DROP_CONNECTION;
     }
-    
+
     // Send a single non-stream packet
     rv = send_nonstream_packets(conn, fd, 1, remote_addr, remote_addrlen);
 
