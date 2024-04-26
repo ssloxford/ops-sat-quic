@@ -448,11 +448,13 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "SPP bridge: Error when receiving UDP message: %s\n", strerror(errno));
                 if (errno == ECONNREFUSED) {
                     // If the remote is a server that's terminated, also terminate
-                    if (udp_client) return -1;
+                    if (udp_client) {
+                        rv = -1;
+                        break;
+                    }
                     // Otherwise, wait for the next connection to the local UDP server
                     udp_remote_set = 0;
                 }
-                errno = 0;
                 continue;
             }
 
@@ -462,7 +464,6 @@ int main(int argc, char **argv) {
             udp_count++;
             spp_count += packets_sent;
             if (spp_count >= SPP_SEQ_COUNT_MODULO) spp_count -= SPP_SEQ_COUNT_MODULO;
-            if (debug) printf("Handling UDP packet took %"PRIu64"ms\n", timestamp_ms() - ts);
         } else if (polls[1].revents & POLLIN) {
             if (debug) printf("SPP bridge: TCP message recieved\n");
 
@@ -471,8 +472,7 @@ int main(int argc, char **argv) {
 
             if (rv == 0) {
                 printf("SPP bridge: Remote shutdown TCP connection\n");
-                deinit(udp_fd, tcp_fd);
-                return 0;
+                break;
             } else if (rv == -1) {
                 fprintf(stderr, "SPP bridge: Error when receiving TCP message: %s\n", strerror(errno));
                 continue;
@@ -490,8 +490,7 @@ int main(int argc, char **argv) {
 
             if (rv == 0) {
                 printf("SPP bridge: Remote shutdown TCP connection\n");
-                deinit(udp_fd, tcp_fd);
-                return 0;
+                break;
             } else if (rv == -1) {
                 fprintf(stderr, "SPP bridge: Error when receiving TCP message: %s\n", strerror(errno));
                 continue;
@@ -510,8 +509,12 @@ int main(int argc, char **argv) {
                     // Otherwise, wait for the next connection to the local UDP server
                     udp_remote_set = 0;
                 }
-                return rv;
+                break;
             }
         }
     }
+
+    deinit(udp_fd, tcp_fd);
+
+    return rv;
 }
