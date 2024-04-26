@@ -188,6 +188,54 @@ static int server_stream_close_cb(ngtcp2_conn *conn, uint32_t flags, int64_t str
     return 0;
 }
 
+static int server_push_cid(server *s, const ngtcp2_cid *cid) {
+    cid_node *node = malloc(sizeof(cid_node));
+
+    if (node == NULL) {
+        return -1;
+    }
+
+    // Insert at the front of the list
+    node->next = s->cids->next;
+    s->cids->next = node;
+
+    ngtcp2_cid_init(&(node->cid), cid->data, cid->datalen);
+
+    return 0;
+}
+
+static int server_get_new_connection_id_cb(ngtcp2_conn *conn, ngtcp2_cid *cid, uint8_t *token, size_t cidlen, void *user_data) {
+    server *s = user_data;
+
+    // Populate the cid and token
+    get_new_connection_id_cb(cid, token, cidlen);
+
+    if (server_push_cid(s, cid) < 0) {
+        return NGTCP2_ERR_CALLBACK_FAILURE;
+    }
+
+    return 0;
+}
+
+static int server_remove_connection_id_cb(ngtcp2_conn *conn, const ngtcp2_cid *cid, void *user_data) {
+    server *s = user_data;
+    
+    cid_node *prev_ptr = s->cids;
+
+    for (cid_node *ptr = prev_ptr->next; ptr != NULL; ptr = prev_ptr->next) {
+        if (ngtcp2_cid_eq(cid, &(ptr->cid))) {
+            // Delete this node
+            prev_ptr->next = ptr->next;
+
+            free(ptr);
+        } else {
+            prev_ptr = ptr;
+        }
+    }
+
+    return 0;
+}
+
 static int server_wolfssl_new(server *s) {
     int rv;
 
@@ -224,6 +272,7 @@ static int server_wolfssl_new(server *s) {
         return ERROR_WOLFSSL_SETUP;
     }
 
+    // Provides the TLS stack with a way to access the ngtcp2_conn of the server
     wolfSSL_set_app_data(s->ssl, &s->ref);
     wolfSSL_set_accept_state(s->ssl);
 
@@ -231,7 +280,6 @@ static int server_wolfssl_new(server *s) {
 }
 
 static int server_settings_init(ngtcp2_callbacks *callbacks, ngtcp2_settings *settings, int debug) {
-    // Similar to client.c. Removed unnecessary recv_retry callback
     ngtcp2_callbacks local_callbacks = {
         NULL,
         ngtcp2_crypto_recv_client_initial_cb, /* recv_client_initial */
@@ -250,8 +298,8 @@ static int server_settings_init(ngtcp2_callbacks *callbacks, ngtcp2_settings *se
         NULL, /* extend_max_local_streams_bidi */
         NULL, /* extend_max_local_streams_uni */
         rand_cb, // Not provided by library
-        get_new_connection_id_cb, // Not provided by library
-        NULL, /* remove_connection_id */
+        server_get_new_connection_id_cb, /* get_new_connection_id */
+        server_remove_connection_id_cb, /* remove_connection_id */
         ngtcp2_crypto_update_key_cb,
         NULL, /* path_validation */
         NULL, /* select_preferred_address */
@@ -342,6 +390,16 @@ static int server_init(server *s, char *server_port) {
         return ERROR_OUT_OF_MEMORY;
     }
 
+    // Dummy header
+    s->cids = malloc(sizeof(cid_node));
+    if (s->cids == NULL) {
+        free(s->reply_stream);
+        free(s->streams);
+        free(s->multiplex_ctx);
+        return ERROR_OUT_OF_MEMORY;
+    }
+    s->cids->next = NULL;
+
     s->reply_stream->next = NULL;
 
     s->locallen = sizeof(s->localsock);
@@ -360,6 +418,8 @@ static int server_init(server *s, char *server_port) {
 }
 
 static int server_drop_connection(server *s) {
+    if (s->settings->debug) printf("Dropping connection\n");
+
     s->connected = 0;
 
     // The loop repeatedly pops streams from the front of the list until they're all deleted
@@ -374,11 +434,18 @@ static int server_drop_connection(server *s) {
         free(reply);
     }
 
+    // Remove all known connection IDs
+    for (cid_node *cid = s->cids->next; cid != NULL; cid = s->cids->next) {
+        s->cids->next = cid->next;
+        free(cid);
+    }
+
     // Reset the stream multiplexing context
     s->multiplex_ctx->last_sent = s->streams;
 
     ngtcp2_conn_del(s->conn);
 
+    // A new ssl context and instance is created for each new connection
     wolfSSL_CTX_free(s->ctx);
     wolfSSL_free(s->ssl);
 
@@ -465,8 +532,9 @@ static int server_accept_connection(server *s, uint8_t *buf, size_t buflen, ngtc
 
 static int server_read_step(server *s) {
     ngtcp2_version_cid version;
+    ngtcp2_cid cid_store;
 
-    int rv;
+    int rv, found;
 
     uint8_t buf[BUF_SIZE];
 
@@ -509,8 +577,26 @@ static int server_read_step(server *s) {
             }
         };
 
+        ngtcp2_cid_init(&cid_store, version.dcid, version.dcidlen);
+
+        found = 0;
+        for (cid_node *ptr = s->cids->next; ptr != NULL; ptr = ptr->next) {
+            if (ngtcp2_cid_eq(&cid_store, &(ptr->cid))) {
+                found = 1;
+                break;
+            }
+        }
+
+        if (s->settings->debug && !found) {
+            printf("Did not find DCID from packet in cid list\n");
+        }
+
         // If we're not currently connected, try accepting the connection. If it works, action the packet
-        if (!s->connected) {
+        if (!found) {
+            if (s->connected) {
+                // Assume that a close_connection frame was lost. Allow the new connection to userp this one
+                server_drop_connection(s);
+            }
             rv = server_accept_connection(s, buf, sizeof(buf), &path);
             if (rv < 0) {
                 return rv;
@@ -532,6 +618,22 @@ static int server_read_step(server *s) {
                 fprintf(stderr, "TLS alert: %d\n", ngtcp2_conn_get_tls_alert(s->conn));
             }
             return rv; 
+        }
+
+        if (!found) {
+            // We've just accepted this connection. Associate the relevant connection IDs
+            server_push_cid(s, &cid_store);
+
+            // Gets the length of the buffer needed to store the server scids
+            rv = ngtcp2_conn_get_scid(s->conn, NULL);
+
+            ngtcp2_cid scids[rv];
+
+            ngtcp2_conn_get_scid(s->conn, scids);
+
+            for (int i = 0; i < rv; i++) {
+                server_push_cid(s, scids+i);
+            }
         }
     }
 

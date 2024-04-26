@@ -85,6 +85,18 @@ static int client_extend_max_local_streams_uni_cb(ngtcp2_conn *conn, uint64_t ma
     return 0;
 }
 
+static int client_get_new_connection_id_cb(ngtcp2_conn *conn, ngtcp2_cid *cid, uint8_t *token, size_t cidlen, void *user_data) {
+    int rv;
+    
+    rv = get_new_connection_id_cb(cid, token, cidlen);
+
+    if (rv < 0) {
+        return NGTCP2_ERR_CALLBACK_FAILURE;
+    }
+
+    return 0;
+}
+
 static int client_wolfssl_init(client *c) {
     int rv;
 
@@ -170,7 +182,7 @@ static int client_ngtcp2_init(client *c, char* server_ip, char *server_port) {
         NULL, /* extend_max_local_streams_bidi */
         client_extend_max_local_streams_uni_cb, /* extend_max_local_streams_uni */
         rand_cb,
-        get_new_connection_id_cb,
+        client_get_new_connection_id_cb,
         NULL, /* remove_connection_id */
         ngtcp2_crypto_update_key_cb,
         NULL, /* path_validation */

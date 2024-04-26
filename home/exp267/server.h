@@ -30,9 +30,17 @@ typedef struct _reply_on {
     struct _reply_on *next;
 } reply_on;
 
+typedef struct _cid_node {
+    ngtcp2_cid cid;
+
+    struct _cid_node *next;
+} cid_node;
+
 typedef struct _server {
     ngtcp2_conn *conn;
     ngtcp2_crypto_conn_ref ref;
+
+    cid_node *cids;
 
     int fd;
 

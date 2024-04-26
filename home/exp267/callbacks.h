@@ -19,6 +19,6 @@ int handshake_completed_cb(uint64_t initial_ts);
 
 void rand_cb(uint8_t* dest, size_t destlen, const ngtcp2_rand_ctx* rand_ctx);
 
-int get_new_connection_id_cb(ngtcp2_conn* conn, ngtcp2_cid* cid, uint8_t* token, size_t cidlen, void* user_data);
+int get_new_connection_id_cb(ngtcp2_cid* cid, uint8_t* token, size_t cidlen);
 
 #endif

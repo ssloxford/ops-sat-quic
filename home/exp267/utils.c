@@ -35,7 +35,7 @@ uint64_t timestamp_ms() {
 
 // Seeds the RNG
 void rand_init() {
-    srand(time(NULL));
+    srand(timestamp());
 }
 
 int rand_bytes(uint8_t* dest, size_t destlen) {
