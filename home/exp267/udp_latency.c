@@ -221,7 +221,11 @@ int main(int argc, char **argv) {
 
                 // Send the packet data to it's intended dest. If remote address not yet set, drop the packet
                 if (right_addr_set) {
-                    sendto(right_fd, pkt_ptr->data, pkt_ptr->datalen, 0, (struct sockaddr*) &right_remote, right_remotelen);
+                    rv = sendto(right_fd, pkt_ptr->data, pkt_ptr->datalen, 0, (struct sockaddr*) &right_remote, right_remotelen);
+
+                    if (rv < 0) {
+                        return rv;
+                    }
                 }
 
                 // Pop the packet node off the head of the queue
@@ -290,6 +294,11 @@ int main(int argc, char **argv) {
                     return -1;
                 }
 
+                if (rv == 0) {
+                    printf("Remote closed connection\n");
+                    return 0;
+                }
+
                 // If dropping this packet, free the buffer it's been read into and return to the top of the loop
                 if (discard_packet) {
                     free(buf);
@@ -318,6 +327,11 @@ int main(int argc, char **argv) {
                 if (rv == -1) {
                     fprintf(stderr, "Error when right receiving message: %s\n", strerror(errno));
                     return -1;
+                }
+
+                if (rv == 0) {
+                    printf("Remote closed connection\n");
+                    return 0;
                 }
 
                 if (discard_packet) {

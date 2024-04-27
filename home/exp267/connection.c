@@ -214,12 +214,16 @@ int get_timeout(ngtcp2_conn *conn) {
     }
 }
 
-int handle_timeout(ngtcp2_conn *conn, int fd, struct sockaddr *remote_addr, socklen_t remote_addrlen) {
+int handle_timeout(ngtcp2_conn *conn, int fd, struct sockaddr *remote_addr, socklen_t remote_addrlen, int debug) {
     int rv;
 
     // Docs are incredibly sparse on this
     // Basically just adjusts internal state to inform writev_stream of what to do next
     rv = ngtcp2_conn_handle_expiry(conn, timestamp());
+
+    if (debug >= 2 && rv != 0) {
+        printf("Handle expiry: %s\n", ngtcp2_strerror(rv));
+    }
 
     if (rv == NGTCP2_ERR_IDLE_CLOSE || rv == NGTCP2_ERR_HANDSHAKE_TIMEOUT) {
         return ERROR_DROP_CONNECTION;

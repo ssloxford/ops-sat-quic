@@ -132,7 +132,7 @@ static int server_handshake_completed_cb(ngtcp2_conn *conn, void *user_data) {
 static int server_stream_close_cb(ngtcp2_conn *conn, uint32_t flags, int64_t stream_id, uint64_t app_error_code, void *user_data, void *stream_data) {
     server *s = user_data;
 
-    if (s->settings->debug) printf("Closing stream %ld\n", stream_id);
+    if (s->settings->debug >= 1) printf("Closing stream %ld\n", stream_id);
     if (stream_id & 0x01) {
         // Server initiated stream
         stream *stream_n = stream_data;
@@ -205,14 +205,20 @@ static int server_push_cid(server *s, const ngtcp2_cid *cid) {
 }
 
 static int server_get_new_connection_id_cb(ngtcp2_conn *conn, ngtcp2_cid *cid, uint8_t *token, size_t cidlen, void *user_data) {
+    int rv;
+
     server *s = user_data;
 
     // Populate the cid and token
     get_new_connection_id_cb(cid, token, cidlen);
 
-    if (server_push_cid(s, cid) < 0) {
+    rv = server_push_cid(s, cid);
+    
+    if (rv < 0) {
         return NGTCP2_ERR_CALLBACK_FAILURE;
     }
+
+    if (s->settings->debug >= 1) printf("Successfully generated new connection ID\n");
 
     return 0;
 }
@@ -227,6 +233,8 @@ static int server_remove_connection_id_cb(ngtcp2_conn *conn, const ngtcp2_cid *c
             // Delete this node
             prev_ptr->next = ptr->next;
 
+            if (s->settings->debug >= 1) printf("Removing connection id\n");
+
             free(ptr);
         } else {
             prev_ptr = ptr;
@@ -234,6 +242,33 @@ static int server_remove_connection_id_cb(ngtcp2_conn *conn, const ngtcp2_cid *c
     }
 
     return 0;
+}
+
+static int server_dcid_status_cb(ngtcp2_conn *conn, ngtcp2_connection_id_status_type type, uint64_t seq, const ngtcp2_cid *cid, const uint8_t *token, void *user_data) {
+    int rv;
+    
+    server *s = user_data;
+
+    if (type == NGTCP2_CONNECTION_ID_STATUS_TYPE_ACTIVATE) {
+        // Add the provided cid to the cid list
+        if (s->settings->debug >= 1) printf("Activating new DCID\n");
+
+        rv = server_push_cid(s, cid);
+
+        if (rv < 0) {
+            return NGTCP2_ERR_CALLBACK_FAILURE;
+        }
+
+        return 0;
+    } else if (type == NGTCP2_CONNECTION_ID_STATUS_TYPE_DEACTIVATE) {
+        if (s->settings->debug >= 1) printf("Deactivating DCID\n");
+
+        // Remove the provided cid from the cid list
+        return server_remove_connection_id_cb(conn, cid, user_data);
+    }
+
+    // Should never be called, since the above conditions cover all definitions of type, but is here for futureproofing
+    return NGTCP2_ERR_CALLBACK_FAILURE;
 }
 
 static int server_wolfssl_new(server *s) {
@@ -307,7 +342,7 @@ static int server_settings_init(ngtcp2_callbacks *callbacks, ngtcp2_settings *se
         NULL, /* extend_max_remote_streams_bidi */
         NULL, /* extend_max_remote_streams_uni */
         NULL, /* extend_max_stream_data */
-        NULL, /* dcid_status */
+        server_dcid_status_cb, /* dcid_status */
         NULL, /* handshake_confirmed */
         NULL, /* recv_new_token */
         ngtcp2_crypto_delete_crypto_aead_ctx_cb,
@@ -327,7 +362,7 @@ static int server_settings_init(ngtcp2_callbacks *callbacks, ngtcp2_settings *se
 
     ngtcp2_settings_default(settings);
     settings->initial_ts = timestamp_ms();
-    if (debug) {
+    if (debug >= 2) {
         settings->log_printf = debug_log; // Allows ngtcp2 debug
     }
 
@@ -418,7 +453,7 @@ static int server_init(server *s, char *server_port) {
 }
 
 static int server_drop_connection(server *s) {
-    if (s->settings->debug) printf("Dropping connection\n");
+    if (s->settings->debug >= 1) printf("Dropping connection\n");
 
     s->connected = 0;
 
@@ -496,7 +531,8 @@ static int server_accept_connection(server *s, uint8_t *buf, size_t buflen, ngtc
     // Idle timeout is one minute
     params.max_idle_timeout = 60*NGTCP2_SECONDS;
 
-    // Server DCID is client SCID. 
+    // Server DCID is client SCID, so don't need to generate a DCID. Server should have new SCID though
+
     ngtcp2_cid scid;
     scid.datalen = 8;
     if (rand_bytes(scid.data, scid.datalen) != 0) {
@@ -540,7 +576,7 @@ static int server_read_step(server *s) {
 
     ssize_t pktlen;
 
-    if (s->settings->debug) printf("Starting read step\n");
+    if (s->settings->debug >= 1) printf("Starting read step\n");
 
     for (;;) {
         pktlen = read_message(s->fd, buf, sizeof(buf), (struct sockaddr*) &s->remotesock, &s->remotelen);
@@ -557,7 +593,8 @@ static int server_read_step(server *s) {
             return ERROR_NO_NEW_MESSAGE;
         }
 
-        rv = ngtcp2_pkt_decode_version_cid(&version, buf, pktlen, NGTCP2_MAX_CIDLEN);
+        // 8 is assumed length of the CID when decoding short headers. This doesn't affect long headers
+        rv = ngtcp2_pkt_decode_version_cid(&version, buf, pktlen, 8);
         if (rv < 0) {
             fprintf(stderr, "Could not decode packet version: %s\n", ngtcp2_strerror(rv));
             return rv;
@@ -587,8 +624,10 @@ static int server_read_step(server *s) {
             }
         }
 
-        if (s->settings->debug && !found) {
-            printf("Did not find DCID from packet in cid list\n");
+        if (s->settings->debug >= 1 && !found) {
+            printf("Could not find DCID in CID list: ");
+            print_cid(&cid_store);
+            printf("\n");
         }
 
         // If we're not currently connected, try accepting the connection. If it works, action the packet
@@ -652,7 +691,7 @@ static int server_write_step(server *s) {
 
     stream *stream_to_send;
 
-    if (s->settings->debug) printf("Starting write step\n");
+    if (s->settings->debug >= 1) printf("Starting write step\n");
 
     // If there are no streams open, multiplex_streams will return NULL
     stream_to_send = multiplex_streams(s->multiplex_ctx);
@@ -662,8 +701,6 @@ static int server_write_step(server *s) {
     if (rv < 0) {
         return rv;
     }
-
-    if (s->settings->debug) printf("Successfully completed write step\n");
 
     return 0;
 }
@@ -678,7 +715,7 @@ static void settings_default(server_settings *settings) {
 void print_helpstring() {
     printf("-h: Print help string\n");
     printf("-p [port]: Specify port to use. Default 11111\n");
-    printf("-d: Enable debugging output\n");
+    printf("-d: Enable debugging output. Can be used multiple times\n");
     printf("-f [file]: File to write recieved data into. Default stdout\n");
     printf("-t: Enable timing and reporting\n");
     printf("-r: Enable echoing all data back to client\n");
@@ -710,7 +747,7 @@ int main(int argc, char **argv) {
                 server_port = optarg;
                 break;
             case 'd':
-                settings.debug = 1;
+                settings.debug += 1;
                 break;
             case 'r':
                 settings.reply = 1;
@@ -754,7 +791,7 @@ int main(int argc, char **argv) {
             timeout = -1;
         }
 
-        if (s.settings->debug) printf("Timeout: %d\n", timeout);
+        if (s.settings->debug >= 2) printf("Timeout: %d\n", timeout);
 
         // Waits for the fd saved to the server to be ready to read. No timeout
         rv = poll(&conn_poll, 1, timeout);
@@ -765,7 +802,7 @@ int main(int argc, char **argv) {
         }
 
         if (rv == 0) {
-            rv = handle_timeout(s.conn, s.fd, (struct sockaddr*) &s.remotesock, s.remotelen);
+            rv = handle_timeout(s.conn, s.fd, (struct sockaddr*) &s.remotesock, s.remotelen, s.settings->debug);
             if (rv == ERROR_DROP_CONNECTION) {
                 server_drop_connection(&s);
             }

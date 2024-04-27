@@ -182,3 +182,10 @@ int connect_udp_socket(int *fd, const char *server_ip, const char *server_port, 
 
     return 0;
 }
+
+void print_cid(const ngtcp2_cid *cid) {
+    printf("0x");
+    for (int i = 0; i < cid->datalen; i++) {
+        printf("%02x", cid->data[i]);
+    }
+}

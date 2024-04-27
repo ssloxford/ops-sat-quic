@@ -58,7 +58,7 @@ ssize_t send_nonstream_packets(ngtcp2_conn *conn, int fd, int limit, struct sock
 
 int get_timeout(ngtcp2_conn *conn);
 
-int handle_timeout(ngtcp2_conn *conn, int fd, struct sockaddr *remote_addr, socklen_t remote_addrlen);
+int handle_timeout(ngtcp2_conn *conn, int fd, struct sockaddr *remote_addr, socklen_t remote_addrlen, int debug);
 
 int enqueue_message(const uint8_t *payload, size_t payloadlen, int fin, stream *stream);
 

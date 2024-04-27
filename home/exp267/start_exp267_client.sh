@@ -43,7 +43,7 @@ else
             done
             echo "Running experiment with arguments: $args."
             echo "Streams: $sc; Data: $kb KB" >> $HOME_DIR/toGround/$logfile
-            $HOME_DIR/$client_id -p11120 -t $args | awk '{print strftime("[%d-%m-%Y %H:%M:%S.%f]"), $0}' >> $HOME_DIR/toGround/$logfile
+            $HOME_DIR/$client_id -p11120 -t -d -d $args | awk '{print strftime("[%d-%m-%Y %H:%M:%S.%f]"), $0}' >> $HOME_DIR/toGround/$logfile
             echo >> $HOME_DIR/toGround/$logfile # Add a new line between trials
         done
     done

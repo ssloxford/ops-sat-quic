@@ -30,7 +30,7 @@ static int client_stream_close_cb(ngtcp2_conn *conn, uint32_t flags, int64_t str
     // A local stream has been closed
     client *c = user_data;
 
-    if (c->settings->debug) printf("Closing stream with id %"PRId64"\n", stream_id);
+    if (c->settings->debug >= 1) printf("Closing stream with id %"PRId64"\n", stream_id);
 
     if (!(stream_id & 0x01)) {
         // Client initiated stream. No need to do anything if it's a server-initiated stream
@@ -61,7 +61,7 @@ static int client_handshake_completed_cb(ngtcp2_conn *conn, void *user_data) {
 static int client_extend_max_local_streams_uni_cb(ngtcp2_conn *conn, uint64_t max_streams, void *user_data) {
     client *c = user_data;
 
-    if (c->settings->debug) printf("Client opening new streams. Max streams: %"PRIu64"\n", max_streams);
+    if (c->settings->debug >= 1) printf("Client opening new streams. Max streams: %"PRIu64"\n", max_streams);
 
     for (int i = 0; i < c->inputslen; i++) {
         if (i < max_streams) {
@@ -214,7 +214,7 @@ static int client_ngtcp2_init(client *c, char* server_ip, char *server_port) {
     settings.initial_ts = timestamp();
 
     // Enable debugging
-    if (c->settings->debug) {
+    if (c->settings->debug >= 2) {
         settings.log_printf = debug_log; // ngtcp2 debugging
     }
 
@@ -319,7 +319,7 @@ static int client_init(client *c, char* server_ip, char *server_port, input_sour
         return rv;
     }
 
-    if (c->settings->debug) {
+    if (c->settings->debug >= 1) {
         printf("Successfully initialised wolfSSL\n");
     }
 
@@ -435,9 +435,8 @@ static int client_write_step(client *c) {
 
     stream *stream_to_send;
 
-    if (c->settings->debug) printf("Starting write step\n");
+    if (c->settings->debug >= 1) printf("Starting write step\n");
 
-    // rv = client_generate_data(c);
 
     // If there are no streams open, multiplex_streams will return NULL
     stream_to_send = multiplex_streams(c->multiplex_ctx);
@@ -447,8 +446,6 @@ static int client_write_step(client *c) {
     if (rv < 0) {
         return rv;
     }
-
-    if (c->settings->debug) printf("Successfully completed write step\n");
 
     return 0;
 }
@@ -464,7 +461,7 @@ static int client_read_step(client *c) {
 
     ssize_t pktlen;
 
-    if (c->settings->debug) printf("Starting read step\n");
+    if (c->settings->debug >= 1) printf("Starting read step\n");
 
     for (;;) {
         pktlen = read_message(c->fd, buf, sizeof(buf), (struct sockaddr*) &remote_addr, &remote_addrlen);
@@ -581,7 +578,7 @@ void print_helpstring() {
     printf("-f [file]: Specifies source of transmission data. Default stdin\n");
     printf("-s [bytes]: Generate and send [bytes] random bytes. Empty for infinite data. Cannot be used with -f\n");
     printf("-t: Enable timing and reporting\n");
-    printf("-d: Enable debug printing\n");
+    printf("-d: Enable debug printing. Can be used multiple times\n");
 }
 
 int main(int argc, char **argv){
@@ -620,7 +617,7 @@ int main(int argc, char **argv){
                 server_port = optarg;
                 break;
             case 'd':
-                settings.debug = 1;
+                settings.debug += 1;
                 break;
             case 'f':
                 if (open_inputs >= inputslen) {
@@ -672,7 +669,7 @@ int main(int argc, char **argv){
         }
     }
 
-    if (settings.debug) printf("STARTING CLIENT\n");
+    if (settings.debug >= 1) printf("STARTING CLIENT\n");
 
     rv = client_init(&c, server_ip, server_port, inputs, open_inputs);
 
@@ -681,7 +678,7 @@ int main(int argc, char **argv){
         return rv;
     }
 
-    if (settings.debug) printf("Successfully initialised client\n");
+    if (settings.debug >= 1) printf("Successfully initialised client\n");
 
     // Set up UDP socket polling
     struct pollfd poll_fd;
@@ -700,15 +697,15 @@ int main(int argc, char **argv){
 
             timeout = get_timeout(c.conn);
 
-            if (c.settings->debug) printf("Timeout: %d\n", timeout);
+            if (c.settings->debug >= 2) printf("Timeout: %d\n", timeout);
 
             // Wait for there to be a UDP packet available
             rv = poll(&poll_fd, 1, timeout);
 
             if (rv == 0) {
-                if (settings.debug) printf("Handling timeout\n");
+                if (settings.debug >= 1) printf("Handling timeout\n");
                 // Timeout occured
-                rv = handle_timeout(c.conn, c.fd, (struct sockaddr*) &c.remotesock, c.remotelen);
+                rv = handle_timeout(c.conn, c.fd, (struct sockaddr*) &c.remotesock, c.remotelen, c.settings->debug);
                 if (rv == ERROR_DROP_CONNECTION) {
                     // TODO - Maybe a printf in to say we idle timed out
                     return 0;
@@ -732,14 +729,14 @@ int main(int argc, char **argv){
 
             timeout = get_timeout(c.conn);
             
-            if (c.settings->debug) printf("Timeout: %d\n", timeout);
+            if (c.settings->debug >= 2) printf("Timeout: %d\n", timeout);
 
             // Wait for an input, a UDP message, or a timeout
             rv = poll(&poll_fd, 1, timeout);
 
             if (rv == 0) {
                 // Timeout occured
-                rv = handle_timeout(c.conn, c.fd, (struct sockaddr*) &c.remotesock, c.remotelen);
+                rv = handle_timeout(c.conn, c.fd, (struct sockaddr*) &c.remotesock, c.remotelen, c.settings->debug);
                 if (rv == ERROR_DROP_CONNECTION) {
                     return 0;
                 }

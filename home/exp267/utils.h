@@ -24,4 +24,6 @@ int bind_udp_socket(int *fd, const char *server_port);
 
 int connect_udp_socket(int *fd, const char *server_ip, const char *server_port, struct sockaddr *remoteaddr, socklen_t *remoteaddrlen);
 
+void print_cid(const ngtcp2_cid *cid);
+
 #endif
