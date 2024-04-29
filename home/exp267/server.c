@@ -689,7 +689,7 @@ static int server_read_step(server *s) {
 static int server_write_step(server *s) {
     if (s->settings->debug >= 1) printf("Starting write step\n");
 
-    return write_step(s->conn, s->fd, s->multiplex_ctx, (struct sockaddr*) &s->remotesock, s->remotelen);
+    return write_step(s->conn, s->fd, s->multiplex_ctx, (struct sockaddr*) &s->remotesock, s->remotelen, s->settings->debug);
 }
 
 static void settings_default(server_settings *settings) {
@@ -792,17 +792,19 @@ int main(int argc, char **argv) {
             rv = handle_timeout(s.conn, s.fd, (struct sockaddr*) &s.remotesock, s.remotelen, s.settings->debug);
             if (rv == ERROR_DROP_CONNECTION) {
                 server_drop_connection(&s);
-            }
-            continue;
-        }
-
-        rv = server_read_step(&s);
-        if (rv < 0 && rv != ERROR_NO_NEW_MESSAGE) {
-            if (rv == ERROR_DRAINING_STATE) {
-                // The connection is being closed. Server must process remaining packets (eg. ACK)
                 continue;
             }
-            return rv;
+        }
+
+        if (conn_poll.revents & POLLIN) {
+            rv = server_read_step(&s);
+            if (rv < 0 && rv != ERROR_NO_NEW_MESSAGE) {
+                if (rv == ERROR_DRAINING_STATE) {
+                    // The connection is being closed. Server must process remaining packets (eg. ACK)
+                    continue;
+                }
+                return rv;
+            }
         }
 
         // TODO - Deal with this call for when not sending data

@@ -433,7 +433,7 @@ static int client_generate_data(client *c) {
 static int client_write_step(client *c) {
     if (c->settings->debug >= 1) printf("Starting write step\n");
 
-    return write_step(c->conn, c->fd, c->multiplex_ctx, (struct sockaddr*) &c->remotesock, c->remotelen);
+    return write_step(c->conn, c->fd, c->multiplex_ctx, (struct sockaddr*) &c->remotesock, c->remotelen, c->settings->debug);
 }
 
 static int client_read_step(client *c) {
@@ -672,7 +672,7 @@ int main(int argc, char **argv){
     poll_fd.fd = c.fd;
     poll_fd.events = POLLIN;
 
-    while (1) {
+    for (;;) {
         if (!ngtcp2_conn_get_handshake_completed(c.conn)) {
             // Send handshake data
             rv = client_write_step(&c);
@@ -741,6 +741,7 @@ int main(int argc, char **argv){
 
             if (rv < 0) {
                 if (rv == ERROR_NO_NEW_MESSAGE) {
+                    if (c.settings->debug >= 2) printf("Could not send any message due to congestion control\n");
                     continue;
                 }
                 return rv;

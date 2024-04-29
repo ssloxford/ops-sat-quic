@@ -15,7 +15,7 @@
 #include "utils.h"
 #include "errors.h"
 
-ssize_t prepare_packet(ngtcp2_conn *conn, int64_t stream_id, uint8_t* buf, size_t buflen, ngtcp2_ssize *wdatalen, struct iovec *iov, int fin) {
+ssize_t prepare_packet(ngtcp2_conn *conn, int64_t stream_id, uint8_t* buf, size_t buflen, ngtcp2_ssize *wdatalen, const uint8_t *data, size_t datalen, int fin) {
     // Write stream prepares the message to be sent into buf and returns size of the message
     ngtcp2_tstamp ts = timestamp();
     ngtcp2_pkt_info pi;
@@ -23,6 +23,7 @@ ssize_t prepare_packet(ngtcp2_conn *conn, int64_t stream_id, uint8_t* buf, size_
 
     ssize_t bytes_written;
 
+    // Initialises path storage. It's a path struct packaged with the sockaddr structs also allocated
     ngtcp2_path_storage_zero(&ps);
 
     int flag = NGTCP2_WRITE_STREAM_FLAG_NONE;
@@ -31,8 +32,7 @@ ssize_t prepare_packet(ngtcp2_conn *conn, int64_t stream_id, uint8_t* buf, size_
         flag |= NGTCP2_WRITE_STREAM_FLAG_FIN;
     }
 
-    // Need to cast *iov to (ngtcp2_vec*). Apparently safe: https://nghttp2.org/ngtcp2/types.html#c.ngtcp2_vec
-    bytes_written = ngtcp2_conn_writev_stream(conn, &ps.path, &pi, buf, buflen, wdatalen, flag, stream_id, (ngtcp2_vec*) iov, 1, ts);
+    bytes_written = ngtcp2_conn_write_stream(conn, &ps.path, &pi, buf, buflen, wdatalen, flag, stream_id, data, datalen, ts);
     if (bytes_written < 0) {
         fprintf(stderr, "Trying to write to stream failed: %s\n", ngtcp2_strerror(bytes_written));
         return bytes_written;
@@ -50,13 +50,12 @@ ssize_t prepare_packet(ngtcp2_conn *conn, int64_t stream_id, uint8_t* buf, size_
 }
 
 ssize_t prepare_nonstream_packet(ngtcp2_conn *conn, uint8_t *buf, size_t buflen) {
-    return prepare_packet(conn, -1, buf, buflen, NULL, NULL, 0);
+    return prepare_packet(conn, -1, buf, buflen, NULL, NULL, 0, 0);
 }
 
 int send_packet(int fd, uint8_t* pkt, size_t pktlen, const struct sockaddr* dest_addr, socklen_t destlen) {
     int rv;
 
-    // Don't need to poll ready to write since UDP sockets are connectinless, so can always write
     rv = sendto(fd, pkt, pktlen, 0, dest_addr, destlen);
 
     // On success rv > 0 is the number of bytes sent
@@ -85,7 +84,7 @@ ssize_t read_message(int fd, uint8_t *buf, size_t buflen, struct sockaddr *remot
     return bytes_read;
 }
 
-ssize_t write_step(ngtcp2_conn *conn, int fd, stream_multiplex_ctx *multi_ctx, struct sockaddr* sockaddr, socklen_t sockaddrlen) {
+ssize_t write_step(ngtcp2_conn *conn, int fd, stream_multiplex_ctx *multi_ctx, struct sockaddr* sockaddr, socklen_t sockaddrlen, int debug_level) {
     // Data and datalen is the data to be written
     // Buf and bufsize is a general use memory allocation (eg. to pass packets to subroutines)
     ssize_t pktlen;
@@ -102,6 +101,13 @@ ssize_t write_step(ngtcp2_conn *conn, int fd, stream_multiplex_ctx *multi_ctx, s
     data_node *pkt_to_send;
     stream *send_stream;
     
+    // Send a packet with any required "housekeeping" frames, eg. acknowledgements
+    rv = send_nonstream_packets(conn, fd, 1, sockaddr, sockaddrlen);
+
+    if (rv < 0) {
+        return rv;
+    }
+
     for (;;) {
         // Decide on the next stream to send on
         send_stream = multiplex_streams(multi_ctx);
@@ -113,12 +119,9 @@ ssize_t write_step(ngtcp2_conn *conn, int fd, stream_multiplex_ctx *multi_ctx, s
             // Multiplex_streams will not return a stream with empty send queue, so pkt_to_send is not null
             pkt_to_send = send_stream->inflight_tail->next;
         }
-        
-        iov.iov_base = pkt_to_send->payload;
-        iov.iov_len = pkt_to_send->payloadlen;
 
         // Prepare a packet containing a stream frame with the selected data taken from the queue
-        pktlen = prepare_packet(conn, send_stream->stream_id, buf, sizeof(buf), &stream_framelen, &iov, pkt_to_send->fin_bit);
+        pktlen = prepare_packet(conn, send_stream->stream_id, buf, sizeof(buf), &stream_framelen, pkt_to_send->payload, pkt_to_send->payloadlen, pkt_to_send->fin_bit);
 
         if (pktlen < 0) {
             if (pktlen == NGTCP2_ERR_STREAM_DATA_BLOCKED) {
@@ -128,6 +131,7 @@ ssize_t write_step(ngtcp2_conn *conn, int fd, stream_multiplex_ctx *multi_ctx, s
                 return pktlen;
             } else if (pktlen == ERROR_NO_NEW_MESSAGE) {
                 // We've filled the congestion window. The NGTCP2 expiry will fire when we are next allowed to send
+                if (debug_level >= 3) printf("Congestion window full. Data at %ld on stream %ld not sent\n", pkt_to_send->offset, send_stream->stream_id);
                 return 0;
             }
             return pktlen;
@@ -139,18 +143,28 @@ ssize_t write_step(ngtcp2_conn *conn, int fd, stream_multiplex_ctx *multi_ctx, s
             return rv;
         }
 
+        if (debug_level >= 3) printf("Sent a stream packet to stream %ld\n", send_stream->stream_id);
+
+        if (stream_framelen != pkt_to_send->payloadlen) {
+            // The ammount of data sent was not equal to the ammount of data provided
+            if (stream_framelen == -1) {
+                // None of the stream frame was added, do not advance the inflight tail
+                continue;
+            }
+
+            if (debug_level >= 2) printf("Detected partially sent packet, splitting in send queue\n");
+
+            // Split the part sent packet and add the unsent section to the queue after the sent section. We can then advance the tail pointer as normal
+            insert_message(pkt_to_send->payload + stream_framelen, pkt_to_send->payloadlen - stream_framelen, pkt_to_send->fin_bit, pkt_to_send->stream_id, pkt_to_send->offset + stream_framelen, pkt_to_send);
+            // Updating this isn't strictly necessary, but the fin bit in the sent packet was clear so it's nice to reflect that in the send queue
+            pkt_to_send->fin_bit = 0;
+        }
+
+
         pkt_to_send->time_sent = timestamp_ms();
 
         // Update the inflight and send queues for the selected stream
         send_stream->inflight_tail = pkt_to_send;
-    }
-
-    // If there are any "housekeeping" frames that didn't fit into the above packet, send them now
-    // Will likely only send packets if the above code wasn't run. Housekeeping frames are typically small
-    rv = send_nonstream_packets(conn, fd, -1, sockaddr, sockaddrlen);
-
-    if (rv < 0) {
-        return rv;
     }
 
     return 0;
@@ -167,7 +181,7 @@ ssize_t send_nonstream_packets(ngtcp2_conn *conn, int fd, int limit, struct sock
     for (int i = 0; limit < 0 || i < limit; i++) {
         pktlen = prepare_nonstream_packet(conn, buf, sizeof(buf));
         if (pktlen == ERROR_NO_NEW_MESSAGE) {
-            // No more "housekeeping" packets to send. Return 
+            // No more "housekeeping" packets to send or congestion window full.
             return 0;
         }
 
@@ -218,14 +232,14 @@ int get_timeout(ngtcp2_conn *conn) {
     }
 }
 
-int handle_timeout(ngtcp2_conn *conn, int fd, struct sockaddr *remote_addr, socklen_t remote_addrlen, int debug) {
+int handle_timeout(ngtcp2_conn *conn, int fd, struct sockaddr *remote_addr, socklen_t remote_addrlen, int debug_level) {
     int rv;
 
     // Docs are incredibly sparse on this
     // Basically just adjusts internal state to inform writev_stream of what to do next
     rv = ngtcp2_conn_handle_expiry(conn, timestamp());
 
-    if (debug >= 2 && rv != 0) {
+    if (debug_level >= 2 && rv != 0) {
         printf("Handle expiry: %s\n", ngtcp2_strerror(rv));
     }
 
@@ -233,8 +247,8 @@ int handle_timeout(ngtcp2_conn *conn, int fd, struct sockaddr *remote_addr, sock
         return ERROR_DROP_CONNECTION;
     }
 
-    // Send a single non-stream packet
-    rv = send_nonstream_packets(conn, fd, 1, remote_addr, remote_addrlen);
+    // Send any non-stream packets needed
+    rv = send_nonstream_packets(conn, fd, -1, remote_addr, remote_addrlen);
 
     if (rv < 0) {
         return rv;
@@ -244,6 +258,25 @@ int handle_timeout(ngtcp2_conn *conn, int fd, struct sockaddr *remote_addr, sock
 }
 
 int enqueue_message(const uint8_t *payload, size_t payloadlen, int fin, stream *stream) {
+    int rv;
+
+    // Inserts the new message at the end of the stream's send queue
+    rv = insert_message(payload, payloadlen, fin, stream->stream_id, stream->stream_offset, stream->send_tail);
+
+    if (rv < 0) {
+        return rv;
+    }
+
+    // Keep track of the stream offset
+    stream->stream_offset += payloadlen;
+
+    // Update the send tail to be the newly created node
+    stream->send_tail = stream->send_tail->next;
+
+    return 0;
+}
+
+int insert_message(const uint8_t *payload, size_t payloadlen, int fin, uint64_t stream_id, uint64_t offset, data_node *insert_after) {
     uint8_t *pkt_data = malloc(payloadlen);
 
     if (pkt_data == NULL && payloadlen > 0) {
@@ -264,20 +297,14 @@ int enqueue_message(const uint8_t *payload, size_t payloadlen, int fin, stream *
     queue_node->payload = pkt_data;
     queue_node->payloadlen = payloadlen;
 
-    queue_node->stream_id = stream->stream_id;
+    queue_node->stream_id = stream_id;
 
-    queue_node->offset = stream->stream_offset;
-
-    stream->stream_offset += payloadlen;
+    queue_node->offset = offset;
 
     queue_node->fin_bit = fin;
 
-    // Enqueue the created node and update relevant pointers
-    // Insert the queue_node after the send_tail
-    queue_node->next = stream->send_tail->next;
-    stream->send_tail->next = queue_node;
-    // Update the send tail to track the new node
-    stream->send_tail = queue_node;
+    queue_node->next = insert_after->next;
+    insert_after->next = queue_node;
 
     return 0;
 }
