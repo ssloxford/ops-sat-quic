@@ -687,22 +687,9 @@ static int server_read_step(server *s) {
 }
 
 static int server_write_step(server *s) {
-    int rv;
-
-    stream *stream_to_send;
-
     if (s->settings->debug >= 1) printf("Starting write step\n");
 
-    // If there are no streams open, multiplex_streams will return NULL
-    stream_to_send = multiplex_streams(s->multiplex_ctx);
-
-    rv = write_step(s->conn, s->fd, stream_to_send, (struct sockaddr*) &s->remotesock, s->remotelen);
-
-    if (rv < 0) {
-        return rv;
-    }
-
-    return 0;
+    return write_step(s->conn, s->fd, s->multiplex_ctx, (struct sockaddr*) &s->remotesock, s->remotelen);
 }
 
 static void settings_default(server_settings *settings) {

@@ -85,11 +85,13 @@ ssize_t read_message(int fd, uint8_t *buf, size_t buflen, struct sockaddr *remot
     return bytes_read;
 }
 
-ssize_t write_step(ngtcp2_conn *conn, int fd, stream *send_stream, struct sockaddr* sockaddr, socklen_t sockaddrlen) {
+ssize_t write_step(ngtcp2_conn *conn, int fd, stream_multiplex_ctx *multi_ctx, struct sockaddr* sockaddr, socklen_t sockaddrlen) {
     // Data and datalen is the data to be written
     // Buf and bufsize is a general use memory allocation (eg. to pass packets to subroutines)
     ssize_t pktlen;
     struct iovec iov;
+
+    ngtcp2_ssize stream_framelen;
 
     uint8_t buf[BUF_SIZE];
 
@@ -98,22 +100,24 @@ ssize_t write_step(ngtcp2_conn *conn, int fd, stream *send_stream, struct sockad
     ssize_t rv;
 
     data_node *pkt_to_send;
+    stream *send_stream;
     
-    if (send_stream == NULL) {
-        pkt_to_send = NULL;
-    } else {
-        pkt_to_send = send_stream->inflight_tail->next;
-    }
+    for (;;) {
+        // Decide on the next stream to send on
+        send_stream = multiplex_streams(multi_ctx);
 
-    if (pkt_to_send != NULL) {
-        // There's something in the send queue
-        ngtcp2_ssize stream_framelen;
-
+        if (send_stream == NULL) {
+            // All the streams have empty send queues. Exit the send loop
+            break;
+        } else {
+            // Multiplex_streams will not return a stream with empty send queue, so pkt_to_send is not null
+            pkt_to_send = send_stream->inflight_tail->next;
+        }
+        
         iov.iov_base = pkt_to_send->payload;
         iov.iov_len = pkt_to_send->payloadlen;
 
-        // A stream is open, so we will write to the stream
-        // Will also add "housekeeping" frames to the packet
+        // Prepare a packet containing a stream frame with the selected data taken from the queue
         pktlen = prepare_packet(conn, send_stream->stream_id, buf, sizeof(buf), &stream_framelen, &iov, pkt_to_send->fin_bit);
 
         if (pktlen < 0) {
@@ -122,6 +126,9 @@ ssize_t write_step(ngtcp2_conn *conn, int fd, stream *send_stream, struct sockad
                 // We should sent a fin bit on this stream, open a new one, and copy the send queue (with updated offsets)
                 // TODO - Implement this
                 return pktlen;
+            } else if (pktlen == ERROR_NO_NEW_MESSAGE) {
+                // We've filled the congestion window. The NGTCP2 expiry will fire when we are next allowed to send
+                return 0;
             }
             return pktlen;
         }
@@ -134,6 +141,7 @@ ssize_t write_step(ngtcp2_conn *conn, int fd, stream *send_stream, struct sockad
 
         pkt_to_send->time_sent = timestamp_ms();
 
+        // Update the inflight and send queues for the selected stream
         send_stream->inflight_tail = pkt_to_send;
     }
 
@@ -145,11 +153,7 @@ ssize_t write_step(ngtcp2_conn *conn, int fd, stream *send_stream, struct sockad
         return rv;
     }
 
-    if (pkt_to_send == NULL) {
-        return 0;
-    }
-
-    return 1;
+    return 0;
 }
 
 // Processes preparing and sending all available acknowledge packets, handshake, etc.
@@ -348,6 +352,7 @@ stream* multiplex_streams(stream_multiplex_ctx *ctx) {
         ptr = ptr->next;
     }
 
+    // We could have pointer end at last_sent if all are empty or if that's the valid next stream to send
     if (ptr == ctx->last_sent && ptr->inflight_tail == ptr->send_tail) {
         // All stream send queues are empty
         return NULL;

@@ -52,7 +52,7 @@ int send_packet(int fd, uint8_t* pkt, size_t pktlen, const struct sockaddr* dest
 
 ssize_t read_message(int fd, uint8_t *buf, size_t buflen, struct sockaddr *remote_addr, socklen_t *remote_addrlen);
 
-ssize_t write_step(ngtcp2_conn *conn, int fd, stream *send_stream, struct sockaddr *remote_addr, socklen_t remote_addrlen);
+ssize_t write_step(ngtcp2_conn *conn, int fd, stream_multiplex_ctx *multi_ctx, struct sockaddr *remote_addr, socklen_t remote_addrlen);
 
 ssize_t send_nonstream_packets(ngtcp2_conn *conn, int fd, int limit, struct sockaddr *remote_addr, socklen_t remote_addrlen);
 

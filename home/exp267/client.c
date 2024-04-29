@@ -431,23 +431,9 @@ static int client_generate_data(client *c) {
 }
 
 static int client_write_step(client *c) {
-    int rv;
-
-    stream *stream_to_send;
-
     if (c->settings->debug >= 1) printf("Starting write step\n");
 
-
-    // If there are no streams open, multiplex_streams will return NULL
-    stream_to_send = multiplex_streams(c->multiplex_ctx);
-
-    rv = write_step(c->conn, c->fd, stream_to_send, (struct sockaddr*) &c->remotesock, c->remotelen);
-
-    if (rv < 0) {
-        return rv;
-    }
-
-    return 0;
+    return write_step(c->conn, c->fd, c->multiplex_ctx, (struct sockaddr*) &c->remotesock, c->remotelen);
 }
 
 static int client_read_step(client *c) {
