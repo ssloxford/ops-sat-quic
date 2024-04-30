@@ -19,6 +19,8 @@ typedef struct _server_settings {
     int output_fd;
 
     int timing;
+
+    ngtcp2_cc_algo congestion_control;
 } server_settings;
 
 // Node in a linked list registering what stream to reply on when receiving data

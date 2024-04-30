@@ -122,7 +122,7 @@ static int server_recv_stream_data_cb(ngtcp2_conn *conn, uint32_t flags, int64_t
 static int server_handshake_completed_cb(ngtcp2_conn *conn, void *user_data) {
     server *s = user_data;
 
-    if (s->settings->timing) {
+    if (s->settings->timing >= 1) {
         handshake_completed_cb(s->initial_ts);
     }
 
@@ -137,7 +137,7 @@ static int server_stream_close_cb(ngtcp2_conn *conn, uint32_t flags, int64_t str
         // Server initiated stream
         stream *stream_n = stream_data;
 
-        if (s->settings->timing) {
+        if (s->settings->timing >= 1) {
             // Report timing for that stream
             printf("Stream %ld closed in %ld after %ld bytes\n", stream_id, timestamp_ms() - stream_n->stream_opened, stream_n->stream_offset);
         }
@@ -314,7 +314,7 @@ static int server_wolfssl_new(server *s) {
     return 0;
 }
 
-static int server_settings_init(ngtcp2_callbacks *callbacks, ngtcp2_settings *settings, int debug) {
+static int server_settings_init(ngtcp2_callbacks *callbacks, ngtcp2_settings *settings, server_settings *server_settings) {
     ngtcp2_callbacks local_callbacks = {
         NULL,
         ngtcp2_crypto_recv_client_initial_cb, /* recv_client_initial */
@@ -362,9 +362,10 @@ static int server_settings_init(ngtcp2_callbacks *callbacks, ngtcp2_settings *se
 
     ngtcp2_settings_default(settings);
     settings->initial_ts = timestamp_ms();
-    if (debug >= 2) {
+    if (server_settings->debug >= 2) {
         settings->log_printf = debug_log; // Allows ngtcp2 debug
     }
+    settings->cc_algo = server_settings->congestion_control;
 
     return 0;
 }
@@ -511,7 +512,7 @@ static int server_accept_connection(server *s, uint8_t *buf, size_t buflen, ngtc
     // First packet is acceptable, so create the ngtcp2_conn
     ngtcp2_transport_params_default(&params);
 
-    server_settings_init(&callbacks, &settings, s->settings->debug);
+    server_settings_init(&callbacks, &settings, s->settings);
 
     // Docs state the the original_dcid field must be set
     params.original_dcid = header.dcid;
@@ -559,7 +560,7 @@ static int server_accept_connection(server *s, uint8_t *buf, size_t buflen, ngtc
 
     s->connected = 1;
 
-    if (s->settings->timing) {
+    if (s->settings->timing >= 1) {
         s->initial_ts = timestamp_ms();
     }
 
@@ -697,6 +698,7 @@ static void settings_default(server_settings *settings) {
     settings->reply = 0;
     settings->output_fd = -1;
     settings->timing = 0;
+    settings->congestion_control = NGTCP2_CC_ALGO_CUBIC;
 }
 
 void print_helpstring() {
@@ -704,7 +706,8 @@ void print_helpstring() {
     printf("-p [port]: Specify port to use. Default 11111\n");
     printf("-d: Enable debugging output. Can be used multiple times\n");
     printf("-f [file]: File to write recieved data into. Default stdout\n");
-    printf("-t: Enable timing and reporting\n");
+    printf("-t: Enable timing and reporting. Can be used multiple times\n");
+    printf("-c [algo]: Specifies congestion control algorithm. \n\tc: Cubic\n\tb: BBR v2\n\tr: Reno\n");
     printf("-r: Enable echoing all data back to client\n");
 }
 
@@ -725,7 +728,7 @@ int main(int argc, char **argv) {
 
     s.settings = &settings;
 
-    while ((opt = getopt(argc, argv, "htdp:f::r")) != -1) {
+    while ((opt = getopt(argc, argv, "htdp:f::rc:")) != -1) {
         switch (opt) {
             case 'h':
                 print_helpstring();
@@ -751,7 +754,23 @@ int main(int argc, char **argv) {
                 }
                 break;
             case 't':
-                settings.timing = 1;
+                settings.timing += 1;
+                break;
+            case 'c':
+                switch (optarg[0]) {   
+                    case 'c':
+                        settings.congestion_control = NGTCP2_CC_ALGO_CUBIC;
+                        break;
+                    case 'r':
+                        settings.congestion_control = NGTCP2_CC_ALGO_RENO;
+                        break;
+                    case 'b':
+                        settings.congestion_control = NGTCP2_CC_ALGO_BBR;
+                        break;
+                    default:
+                        printf("Unknown congestion control algorithm %c. Check helpstring\n", optarg[0]);
+                        break;
+                }
                 break;
             case '?':
                 printf("Unknown option: -%c\n", optopt);

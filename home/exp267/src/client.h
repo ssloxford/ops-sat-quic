@@ -12,6 +12,8 @@ typedef struct _client_settings {
     int debug;
 
     int timing;
+
+    ngtcp2_cc_algo congestion_control;
 } client_settings;
 
 typedef struct _input_source {

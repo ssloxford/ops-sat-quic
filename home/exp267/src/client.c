@@ -36,7 +36,7 @@ static int client_stream_close_cb(ngtcp2_conn *conn, uint32_t flags, int64_t str
         // Client initiated stream. No need to do anything if it's a server-initiated stream
         stream *stream_n = stream_data;
 
-        if (c->settings->timing) {
+        if (c->settings->timing >= 1) {
             // Report timing for that stream
             printf("Stream %"PRId64" closed in %"PRIu64"ms after %"PRIu64" bytes\n", stream_id, timestamp_ms() - stream_n->stream_opened, stream_n->stream_offset);
         }
@@ -51,7 +51,7 @@ static int client_handshake_completed_cb(ngtcp2_conn *conn, void *user_data) {
     // Just used for reporing handshake timing
     client *c = user_data;
 
-    if (c->settings->timing) {
+    if (c->settings->timing >= 1) {
         handshake_completed_cb(c->initial_ts);
     }
 
@@ -214,9 +214,11 @@ static int client_ngtcp2_init(client *c, char* server_ip, char *server_port) {
     settings.initial_ts = timestamp();
 
     // Enable debugging
-    if (c->settings->debug >= 2) {
+    if (c->settings->debug >= 3) {
         settings.log_printf = debug_log; // ngtcp2 debugging
     }
+
+    settings.cc_algo = c->settings->congestion_control;
 
     ngtcp2_transport_params_default(&params);
 
@@ -300,7 +302,7 @@ static int client_init(client *c, char* server_ip, char *server_port, input_sour
     c->locallen = sizeof(c->localsock);
     c->remotelen = sizeof(c->remotesock);
 
-    if (c->settings->timing) {
+    if (c->settings->timing >= 1) {
         c->initial_ts = timestamp_ms();
     }
 
@@ -540,7 +542,7 @@ static int client_close_connection(client *c) {
 static void client_deinit(client *c) {
     client_close_connection(c);
 
-    if (c->settings->timing) {
+    if (c->settings->timing >= 1) {
         printf("Total client uptime: %"PRIu64"ms\n", timestamp_ms() - c->initial_ts);
     }
 
@@ -555,6 +557,7 @@ static void client_deinit(client *c) {
 static void default_settings(client_settings *settings) {
     settings->debug = 0;
     settings->timing = 0;
+    settings->congestion_control = NGTCP2_CC_ALGO_CUBIC;
 }
 
 void print_helpstring() {
@@ -563,7 +566,8 @@ void print_helpstring() {
     printf("-p [port]: Specifies port to connect to. Default 11111\n");
     printf("-f [file]: Specifies source of transmission data. Default stdin\n");
     printf("-s [bytes]: Generate and send [bytes] random bytes. Empty for infinite data. Cannot be used with -f\n");
-    printf("-t: Enable timing and reporting\n");
+    printf("-t: Enable timing and reporting. Can be used multiple times\n");
+    printf("-c [algo]: Specifies congestion control algorithm. Default Cubic\n\tc: Cubic\n\tb: BBR v2\n\tr: Reno\n");
     printf("-d: Enable debug printing. Can be used multiple times\n");
 }
 
@@ -591,7 +595,7 @@ int main(int argc, char **argv){
 
     c.settings = &settings;
 
-    while ((opt = getopt(argc, argv, "hdti:p:f:s::")) != -1) {
+    while ((opt = getopt(argc, argv, "hdti:p:f:s::c:")) != -1) {
         switch (opt) {
             case 'h':
                 print_helpstring();
@@ -647,7 +651,23 @@ int main(int argc, char **argv){
                 open_inputs++;
                 break;
             case 't':
-                settings.timing = 1;
+                settings.timing += 1;
+                break;
+            case 'c':
+                switch (optarg[0]) {   
+                    case 'c':
+                        settings.congestion_control = NGTCP2_CC_ALGO_CUBIC;
+                        break;
+                    case 'r':
+                        settings.congestion_control = NGTCP2_CC_ALGO_RENO;
+                        break;
+                    case 'b':
+                        settings.congestion_control = NGTCP2_CC_ALGO_BBR;
+                        break;
+                    default:
+                        printf("Unknown congestion control algorithm %c. Check helpstring\n", optarg[0]);
+                        break;
+                }
                 break;
             case '?':
                 printf("Unknown option -%c\n", optopt);

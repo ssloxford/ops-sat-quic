@@ -124,14 +124,9 @@ ssize_t write_step(ngtcp2_conn *conn, int fd, stream_multiplex_ctx *multi_ctx, s
         pktlen = prepare_packet(conn, send_stream->stream_id, buf, sizeof(buf), &stream_framelen, pkt_to_send->payload, pkt_to_send->payloadlen, pkt_to_send->fin_bit);
 
         if (pktlen < 0) {
-            if (pktlen == NGTCP2_ERR_STREAM_DATA_BLOCKED) {
-                // This stream has reached maximum capacity (according to remote max stream data parameter)
-                // We should sent a fin bit on this stream, open a new one, and copy the send queue (with updated offsets)
-                // TODO - Implement this
-                return pktlen;
-            } else if (pktlen == ERROR_NO_NEW_MESSAGE) {
+            if (pktlen == ERROR_NO_NEW_MESSAGE) {
                 // We've filled the congestion window. The NGTCP2 expiry will fire when we are next allowed to send
-                if (debug_level >= 3) printf("Congestion window full. Data at %ld on stream %ld not sent\n", pkt_to_send->offset, send_stream->stream_id);
+                if (debug_level >= 2) printf("Congestion window full. Data at %ld on stream %ld not sent\n", pkt_to_send->offset, send_stream->stream_id);
                 return 0;
             }
             return pktlen;
@@ -143,7 +138,7 @@ ssize_t write_step(ngtcp2_conn *conn, int fd, stream_multiplex_ctx *multi_ctx, s
             return rv;
         }
 
-        if (debug_level >= 3) printf("Sent a stream packet to stream %ld\n", send_stream->stream_id);
+        if (debug_level >= 2) printf("Sent a stream packet to stream %ld\n", send_stream->stream_id);
 
         if (stream_framelen != pkt_to_send->payloadlen) {
             // The ammount of data sent was not equal to the ammount of data provided

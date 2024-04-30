@@ -20,7 +20,7 @@ int acked_stream_data_offset_cb(ngtcp2_conn *conn, uint64_t offset, uint64_t dat
             // Update the pointers
             prev_ptr->next = ptr->next;
 
-            if (timing) {
+            if (timing >= 2) {
                 // Report total time in flight of this packet
                 delta = timestamp_ms() - ptr->time_sent;
 
