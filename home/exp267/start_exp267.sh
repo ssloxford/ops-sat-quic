@@ -55,6 +55,11 @@ else
                 for ((i = 0; i < sc; i++)); do 
                     args="$args -s$bytes"
                 done
+                if [ $sc -eq 1 ]
+                then
+                    # Also measure inflight time when running single stream
+                    args="-t $args"
+                fi
                 echo "Running experiment with arguments: $args."
                 echo "Streams: $sc; Data: $kb KB; Congestion control: $cc" >> $HOME_DIR/toGround/$logfile
                 $HOME_DIR/bin/$client_id $args | awk '{print strftime("[%d-%m-%Y %H:%M:%S.%f]"), $0}' >> $HOME_DIR/toGround/$logfile
