@@ -2,7 +2,8 @@
 # Log files
 *.log
 # Built source code zips
-/delivery
+delivery/
+bin/
 
 # Prerequisites
 *.d

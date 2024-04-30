@@ -41,6 +41,14 @@ static int client_stream_close_cb(ngtcp2_conn *conn, uint32_t flags, int64_t str
             printf("Stream %"PRId64" closed in %"PRIu64"ms after %"PRIu64" bytes\n", stream_id, timestamp_ms() - stream_n->stream_opened, stream_n->stream_offset);
         }
 
+        // Null the pointer in the input list
+        for (int i = 0; i < c->inputslen; i++) {
+            if (c->inputs[i].stream == stream_n) {
+                // This input sends on this stream
+                c->inputs[i].stream = NULL;
+            }
+        }
+
         return stream_close_cb(stream_n, c->streams);
     }
 
@@ -545,6 +553,19 @@ static void client_deinit(client *c) {
     if (c->settings->timing >= 1) {
         printf("Total client uptime: %"PRIu64"ms\n", timestamp_ms() - c->initial_ts);
     }
+
+    // Free the allocated memory
+    free(c->multiplex_ctx);
+
+    for (stream *ptr = c->streams->next; ptr != NULL; ptr = c->streams->next) {
+        // The callback deallocates the inflight/send queue, deallocates the stream struct, and rejoins the queue
+        stream_close_cb(ptr, c->streams);
+    }
+
+    // Free the streams dummy header
+    free(c->streams);
+    
+    free(c->inputs);
 
     ngtcp2_conn_del(c->conn);
 

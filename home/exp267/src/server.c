@@ -132,14 +132,14 @@ static int server_handshake_completed_cb(ngtcp2_conn *conn, void *user_data) {
 static int server_stream_close_cb(ngtcp2_conn *conn, uint32_t flags, int64_t stream_id, uint64_t app_error_code, void *user_data, void *stream_data) {
     server *s = user_data;
 
-    if (s->settings->debug >= 1) printf("Closing stream %ld\n", stream_id);
+    if (s->settings->debug >= 1) printf("Closing stream %"PRId64"\n", stream_id);
     if (stream_id & 0x01) {
         // Server initiated stream
         stream *stream_n = stream_data;
 
         if (s->settings->timing >= 1) {
             // Report timing for that stream
-            printf("Stream %ld closed in %ld after %ld bytes\n", stream_id, timestamp_ms() - stream_n->stream_opened, stream_n->stream_offset);
+            printf("Stream %"PRId64" closed in %"PRId64" after %"PRId64" bytes\n", stream_id, timestamp_ms() - stream_n->stream_opened, stream_n->stream_offset);
         }
 
         return stream_close_cb(stream_n, s->streams);
@@ -166,7 +166,7 @@ static int server_stream_close_cb(ngtcp2_conn *conn, uint32_t flags, int64_t str
 
             if (reply_stream == NULL) {
                 // We did not find the incoming stream in the list. Non-fatal error
-                fprintf(stderr, "Warning: Tried to close reply stream for %ld. Could not find stream with id %ld\n", stream_id, stream_id);
+                fprintf(stderr, "Warning: Tried to close reply stream for %"PRId64". Could not find stream with id %"PRId64"\n", stream_id, stream_id);
                 return 0;
             }
 
@@ -280,17 +280,17 @@ static int server_wolfssl_new(server *s) {
         return ERROR_WOLFSSL_SETUP;
     };
 
-    if (wolfSSL_CTX_load_verify_locations(s->ctx, "certs/ca-cert.pem", 0) != SSL_SUCCESS) {
+    if (wolfSSL_CTX_load_verify_locations(s->ctx, "../certs/ca-cert.pem", 0) != SSL_SUCCESS) {
         fprintf(stderr, "Failed verifying certs\n");
         return ERROR_WOLFSSL_SETUP;
     }
 
-    if (wolfSSL_CTX_use_certificate_file(s->ctx, "certs/server-cert.pem", SSL_FILETYPE_PEM) != SSL_SUCCESS) {
+    if (wolfSSL_CTX_use_certificate_file(s->ctx, "../certs/server-cert.pem", SSL_FILETYPE_PEM) != SSL_SUCCESS) {
         fprintf(stderr, "Failed loading server certificate\n");
         return ERROR_WOLFSSL_SETUP;
     }
 
-    if (wolfSSL_CTX_use_PrivateKey_file(s->ctx, "certs/server-key.pem", SSL_FILETYPE_PEM) != SSL_SUCCESS) {
+    if (wolfSSL_CTX_use_PrivateKey_file(s->ctx, "../certs/server-key.pem", SSL_FILETYPE_PEM) != SSL_SUCCESS) {
         fprintf(stderr, "Failed loading server key\n");
         return ERROR_WOLFSSL_SETUP;
     }

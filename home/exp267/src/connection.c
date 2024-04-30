@@ -126,7 +126,7 @@ ssize_t write_step(ngtcp2_conn *conn, int fd, stream_multiplex_ctx *multi_ctx, s
         if (pktlen < 0) {
             if (pktlen == ERROR_NO_NEW_MESSAGE) {
                 // We've filled the congestion window. The NGTCP2 expiry will fire when we are next allowed to send
-                if (debug_level >= 2) printf("Congestion window full. Data at %ld on stream %ld not sent\n", pkt_to_send->offset, send_stream->stream_id);
+                if (debug_level >= 2) printf("Congestion window full. Data at %"PRIu64" on stream %"PRId64" not sent\n", pkt_to_send->offset, send_stream->stream_id);
                 return 0;
             }
             return pktlen;
@@ -138,7 +138,7 @@ ssize_t write_step(ngtcp2_conn *conn, int fd, stream_multiplex_ctx *multi_ctx, s
             return rv;
         }
 
-        if (debug_level >= 2) printf("Sent a stream packet to stream %ld\n", send_stream->stream_id);
+        if (debug_level >= 2) printf("Sent a stream packet to stream %"PRId64"\n", send_stream->stream_id);
 
         if (stream_framelen != pkt_to_send->payloadlen) {
             // The ammount of data sent was not equal to the ammount of data provided
@@ -342,46 +342,54 @@ stream* open_stream(ngtcp2_conn *conn) {
 }
 
 stream* multiplex_streams(stream_multiplex_ctx *ctx) {
-    stream *ptr;
+    int last_sent_closed = 1, all_streams_empty = 0;
+
+    stream *stream_to_send = NULL;
     
     // Verify that the last_sent stream has not been closed
-    for (ptr = ctx->streams_list; ptr != NULL; ptr = ptr->next) {
+    for (stream *ptr = ctx->streams_list; ptr != NULL; ptr = ptr->next) {
         if (ptr == ctx->last_sent) {
             // Found the stream in the list
+            last_sent_closed = 0;
             break;
         }
     }
 
-    if (ptr == NULL) {
+    if (last_sent_closed) {
         // The last_sent had been closed. Reset the last_sent
         ctx->last_sent = ctx->streams_list;
     }
 
-    for (ptr = ctx->last_sent->next; ptr != ctx->last_sent;) {
-        if (ptr == NULL) {
-            // We've reached the end of the list. Loop around to the front.
-            ptr = ctx->streams_list;
-            // Must continue so the terminatation condition is rechecked and the pointer is advanced to a real stream
-            // If there was no last_sent, dummy header is last sent
-            continue;
+    if (ctx->last_sent = ctx->streams_list) {
+        // Linear search through the streams list
+        for (stream *ptr = ctx->streams_list->next; ptr != NULL; ptr = ptr->next) {
+            if (ptr->inflight_tail != ptr->send_tail) {
+                // The send queue for this stream is non-empty
+                stream_to_send = ptr;
+                break;
+            }
         }
+    } else {
+        // We need to search the list while also looping round to the front once we get to the end
+        // We also know that the streams list is non-empty
+        for (stream *ptr = ctx->last_sent->next;ptr != ctx->last_sent;ptr = ptr->next) {
+            if (ptr == NULL) {
+                // We hit the end of the list, to move the the front
+                ptr = ctx->streams_list->next;
+            }
 
-        if (ptr->inflight_tail != ptr->send_tail) {
-            // The send queue for this stream is non-empty
-            break;
+            if (ptr->inflight_tail != ptr->send_tail) {
+                // The send queue for this stream is non-empty, so we use this one
+                stream_to_send = ptr;
+                break;
+            }
         }
-
-        ptr = ptr->next;
     }
 
-    // We could have pointer end at last_sent if all are empty or if that's the valid next stream to send
-    if (ptr == ctx->last_sent && ptr->inflight_tail == ptr->send_tail) {
-        // All stream send queues are empty
-        return NULL;
+    if (stream_to_send != NULL) {
+        // Update the context ready for next time
+        ctx->last_sent = stream_to_send;
     }
 
-    // Update the context ready for next time
-    ctx->last_sent = ptr;
-
-    return ptr;
+    return stream_to_send;
 }
