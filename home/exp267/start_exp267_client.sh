@@ -17,6 +17,8 @@ then
 else
     echo "Starting bridge $bridge_id"
     $HOME_DIR/bin/$bridge_id -p11120 -t &
+    BRIDGE_PID=$(ps u | tr -s " " | grep -iw "$bridge_id" | grep -vE 'grep|start|su' | cut -d' ' -f2)
+    echo "Bridge PID $BRIDGE_PID"
 fi
 
 if [ $NUM_PROCESSES -ge 1 ]
@@ -25,8 +27,7 @@ then
     echo "$client_id is already running..."
 else
     # Run app
-    echo "$$" > $HOME_DIR/client_pid
-    echo "PID $(cat $HOME_DIR/client_pid)"
+    echo "PID $$"
     echo "Non-NMF experiment"
     echo "Starting $client_id"
     # Run for 1, 2, 4, and 8 streams
