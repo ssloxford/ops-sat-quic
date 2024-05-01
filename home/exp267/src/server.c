@@ -280,17 +280,17 @@ static int server_wolfssl_new(server *s) {
         return ERROR_WOLFSSL_SETUP;
     };
 
-    if (wolfSSL_CTX_load_verify_locations(s->ctx, "../certs/ca-cert.pem", 0) != SSL_SUCCESS) {
+    if (wolfSSL_CTX_load_verify_locations(s->ctx, "certs/ca-cert.pem", 0) != SSL_SUCCESS) {
         fprintf(stderr, "Failed verifying certs\n");
         return ERROR_WOLFSSL_SETUP;
     }
 
-    if (wolfSSL_CTX_use_certificate_file(s->ctx, "../certs/server-cert.pem", SSL_FILETYPE_PEM) != SSL_SUCCESS) {
+    if (wolfSSL_CTX_use_certificate_file(s->ctx, "certs/server-cert.pem", SSL_FILETYPE_PEM) != SSL_SUCCESS) {
         fprintf(stderr, "Failed loading server certificate\n");
         return ERROR_WOLFSSL_SETUP;
     }
 
-    if (wolfSSL_CTX_use_PrivateKey_file(s->ctx, "../certs/server-key.pem", SSL_FILETYPE_PEM) != SSL_SUCCESS) {
+    if (wolfSSL_CTX_use_PrivateKey_file(s->ctx, "certs/server-key.pem", SSL_FILETYPE_PEM) != SSL_SUCCESS) {
         fprintf(stderr, "Failed loading server key\n");
         return ERROR_WOLFSSL_SETUP;
     }

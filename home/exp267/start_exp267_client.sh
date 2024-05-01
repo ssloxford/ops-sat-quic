@@ -2,11 +2,10 @@
 exp_id="arm_exp267"
 bridge_id=$exp_id"_bridge"
 client_id=$exp_id"_client"
-NUM_PROCESSES=$(ps | tr -s " " | cut -d' ' -f5 | grep -iw "$client_id" | grep -vE 'grep|start|su' | wc -l)
-BRIDGE_PID=$(ps | tr -s " " | grep -iw "$bridge_id" | cut -d' ' -f2)
-BRIDGE_PROCESSES=$(echo $BRIDGE_PID | wc -w)
+NUM_PROCESSES=$(ps u | tr -s " " | grep -iw "$client_id" | grep -vE 'grep|start|su' | wc -l)
+BRIDGE_PROCESSES=$(ps u | tr -s " " | grep -iw "$bridge_id" | grep -vE 'grep|start|su' | wc -l)
 timestamp_trigger=$(date +"%Y%m%d_%H%M%S")
-logfile=$exp_id_$timestamp_trigger.log
+logfile=$client_id-$timestamp_trigger.log
 logpath=$HOME_DIR/toGround/$logfile
 HOME_DIR=$PWD
 
@@ -17,9 +16,7 @@ then
     echo "$bridge_id is already running. No need to restart it."
 else
     echo "Starting bridge $bridge_id"
-    $HOME_DIR/bin/$bridge_id -p11120 -t & 
-    echo $BRIDGE_PID > $HOME_DIR/bridge_pid
-    echo "Bridge PID $(cat $HOME_DIR/bridge_pid)"
+    $HOME_DIR/bin/$bridge_id -p11120 -t &
 fi
 
 if [ $NUM_PROCESSES -ge 1 ]
@@ -28,10 +25,10 @@ then
     echo "$client_id is already running..."
 else
     # Run app
-    echo "$$" > $HOME_DIR/exp_pid
-    echo "PID $(cat $HOME_DIR/exp_pid)"
+    echo "$$" > $HOME_DIR/client_pid
+    echo "PID $(cat $HOME_DIR/client_pid)"
     echo "Non-NMF experiment"
-    echo "Starting $exp_id"
+    echo "Starting $client_id"
     # Run for 1, 2, 4, and 8 streams
     for ((sc = 1; sc <= 8; sc *= 2));
     do
@@ -68,7 +65,7 @@ else
             done
         done
     done
-    echo "$exp_id ended - exiting now"
+    echo "$client_id ended - exiting now"
 fi
 
 echo "Ending at $(date +"%H:%M:%S")"
