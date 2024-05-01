@@ -198,6 +198,7 @@ static int handle_spp(int udp_fd, uint8_t *buf, size_t pktlen, incomplete_packet
             // Deallocate this node
             free(pkt_ptr->partial_payload);
             free(pkt_ptr);
+            continue;
         }
 
         // UDP packet number of the node being checked
