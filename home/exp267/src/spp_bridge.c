@@ -274,7 +274,7 @@ static int handle_udp_packet(int tcp_fd, uint8_t *buf, size_t buflen, size_t pkt
 
         bytes_to_send = SPP_TOTAL_LENGTH(packets[i].primary_header.packet_data_length);
 
-        if (debug) printf("Sending SPP of length %ld\n", bytes_to_send);
+        if (debug) printf("Sending SPP of length %zu\n", bytes_to_send);
 
         // Potentially blocking call if remote not able to recieve data
         rv = sendto(tcp_fd, buf, bytes_to_send, 0, remote_addr, remote_addrlen);
@@ -479,7 +479,7 @@ int main(int argc, char **argv) {
             // Wait to recieve the body of the SPP, then process it
             rv = recv(tcp_fd, buf+SPP_PRIM_HEADER_LEN, spp_data_length, MSG_WAITALL);
 
-            if (debug) printf("SPP bridge: Packet of length %ld in total successfully read\n", spp_data_length+SPP_PRIM_HEADER_LEN);
+            if (debug) printf("SPP bridge: Packet of length %zu in total successfully read\n", spp_data_length+SPP_PRIM_HEADER_LEN);
 
             if (rv == 0) {
                 printf("SPP bridge: Remote shutdown TCP connection\n");
