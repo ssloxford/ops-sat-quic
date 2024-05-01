@@ -8,7 +8,7 @@
 #define SPP_SEQ_COUNT_MODULO 16383
 
 #define SPP_PRIM_HEADER_LEN 6
-#define SPP_SEC_HEADER_LEN 3
+#define SPP_SEC_HEADER_LEN 4
 
 // Specific to ESA project
 #define SPP_MTU 256
@@ -16,6 +16,9 @@
 
 #define SPP_HEADER_LEN (SPP_PRIM_HEADER_LEN + SPP_SEC_HEADER_LEN)
 #define SPP_MAX_DATA_LEN (SPP_MTU - SPP_HEADER_LEN)
+
+// The checksum field is the last byte of the header
+#define SPP_CHECKSUM_OFFSET (SPP_HEADER_LEN - 1)
 
 #define SPP_TOTAL_LENGTH(pkt_data_len_field) (pkt_data_len_field + 1 + SPP_PRIM_HEADER_LEN)
 #define SPP_DATA_LENGTH(pkt_total_len) (pkt_total_len - SPP_PRIM_HEADER_LEN - 1)
@@ -80,10 +83,10 @@ typedef struct _SPP_primary_header {
 } SPP_primary_header;
 
 // Must be an integer number of bytes
-// 2 bytes total
+// 4 bytes total
 typedef struct _SPP_secondary_header {
-    // 8 bit field
-    uint8_t udp_packet_num;
+    // 16 bit field
+    uint16_t udp_packet_num;
 
     // 4 bit field
     uint8_t udp_frag_count;

@@ -72,14 +72,15 @@ int serialise_spp(uint8_t *buf, size_t buflen, const SPP *spp) {
     buf[4] |= 0xff & (spp->primary_header.packet_data_length >> 8);
     buf[5] |= 0xff & (spp->primary_header.packet_data_length);
 
-    buf[6] |= 0xff & (spp->secondary_header.udp_packet_num);
-    buf[7] |= 0xf0 & (spp->secondary_header.udp_frag_count << 4);
-    buf[7] |= 0x0f & (spp->secondary_header.udp_frag_num);
+    buf[6] |= 0xff & (spp->secondary_header.udp_packet_num >> 8);
+    buf[7] |= 0xff & (spp->secondary_header.udp_packet_num);
+    buf[8] |= 0xf0 & (spp->secondary_header.udp_frag_count << 4);
+    buf[8] |= 0x0f & (spp->secondary_header.udp_frag_num);
 
     // Checksum
     for (int i = 0; i < SPP_HEADER_LEN; i++) {
         // Bitwise xor for the header checksum. Obviously do not include the checksum field in that
-        if (i != 8) buf[8] ^= buf[i];
+        if (i != SPP_CHECKSUM_OFFSET) buf[SPP_CHECKSUM_OFFSET] ^= buf[i];
     }
 
     size_t data_field_len = packet_length - SPP_HEADER_LEN;
@@ -111,13 +112,13 @@ int deserialise_spp(const uint8_t *buf, SPP *spp) {
     spp->primary_header.packet_data_length = get_spp_data_length(buf);
 
     // Secondary header
-    spp->secondary_header.udp_packet_num = 0xff & buf[6];
-    spp->secondary_header.udp_frag_count = 0x0f & (buf[7] >> 4);
-    spp->secondary_header.udp_frag_num = 0x0f & buf[7];
+    spp->secondary_header.udp_packet_num = 0xffff & ((buf[6] << 8) | buf[7]);
+    spp->secondary_header.udp_frag_count = 0x0f & (buf[8] >> 4);
+    spp->secondary_header.udp_frag_num = 0x0f & buf[8];
 
-    // Verify checksum as first thing
     uint8_t var_checksum = 0;
     for (int i = 0; i < SPP_HEADER_LEN; i++) {
+        // By including checksum, the total should come to 0
         var_checksum ^= buf[i];
     }
 

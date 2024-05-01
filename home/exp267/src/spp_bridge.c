@@ -17,13 +17,11 @@
 
 #define TCP_DEFAULT_PORT "4096"
 #define UDP_DEFAULT_PORT "11120"
-// Destroy the packet if it's incomplete and no new fragment has been recieved in the last 30 seconds
-#define TIMEOUT_MS (30 * 1000)
+// Destroy the packet if it's incomplete and no new fragment has been recieved in the last 15 seconds
+#define TIMEOUT_MS (15 * 1000)
 
-
-// TODO - Timeout on these?
 typedef struct _incomplete_packet {
-    uint8_t packet_number;
+    uint16_t packet_number;
 
     size_t packet_length;
 
@@ -192,6 +190,16 @@ static int handle_spp(int udp_fd, uint8_t *buf, size_t pktlen, incomplete_packet
             break;
         }
         
+        if (pkt_ptr->timeout < ts) {
+            // This packet has expired. Destroy it
+            // It may be that this packet number matches the one we've received, but it should still be destroyed for correctness of the timeout
+            prev_ptr->next = pkt_ptr->next;
+
+            // Deallocate this node
+            free(pkt_ptr->partial_payload);
+            free(pkt_ptr);
+        }
+
         // UDP packet number of the node being checked
         node_udp_pkt_num = pkt_ptr->packet_number;
 
@@ -200,22 +208,8 @@ static int handle_spp(int udp_fd, uint8_t *buf, size_t pktlen, incomplete_packet
             add_to_node(&spp, found_pkt);
             break;
         } else if (node_udp_pkt_num < searching_udp_pkt_num) {
-            // Search list will be ordered by udp packet number in increaing order.
-            // If SPPs are lost, the incomplete will be near the front of the list and will be checked and deallocated eventually
-
-            if (pkt_ptr->timeout < ts) {
-                // This packet has expired. Destroy it
-                prev_ptr->next = pkt_ptr->next;
-
-                // Deallocate this node
-                free(pkt_ptr->partial_payload);
-                free(pkt_ptr);
-            } else {
-                // Advance over this packet. Update the prev_ptr
-                prev_ptr = pkt_ptr;
-            }
-
-            continue;
+            // Search list will be ordered by udp packet number in increaing order, so if we've not reached it yet we can continue
+            prev_ptr = pkt_ptr;
         } else {
             // next packet number is greater than the search number, so insert here
             found_pkt = insert_new_node(&spp, prev_ptr, pkt_ptr);
@@ -340,7 +334,7 @@ int main(int argc, char **argv) {
     uint8_t buf[BUF_SIZE];
 
     // Must manually track the UDP packets that pass through to allow for reconstruction
-    uint8_t udp_count = 0;
+    uint16_t udp_count = 0;
     // Total number of spp packets sent, to keep track of packet numbers in SPP headers
     uint8_t spp_count = 0;
     size_t spp_data_length;
@@ -458,7 +452,6 @@ int main(int argc, char **argv) {
                 continue;
             }
 
-            ts = timestamp_ms();
             // UDP packet recieved
             handle_udp_packet(tcp_fd, buf, sizeof(buf), rv, spp_count, udp_count, &packets_sent, (struct sockaddr*) &tcp_remote, tcp_remotelen, debug);
             udp_count++;
