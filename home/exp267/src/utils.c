@@ -183,6 +183,66 @@ int connect_udp_socket(int *fd, const char *server_ip, const char *server_port, 
     return 0;
 }
 
+
+int connect_tcp_socket(int *fd, char *target_ip, char *target_port, struct sockaddr *remoteaddr, socklen_t *remoteaddrlen) {
+    int rv;
+
+    struct in_addr inaddr;
+
+    rv = inet_aton(target_ip, &inaddr);
+
+    // 0 for error is correct. https://linux.die.net/man/3/inet_aton
+    if (rv == 0) {
+        // Address provided is invalid
+        return -1;
+    }
+
+    // Opens TCP socket and connects to localhost:target_port, saving the sockaddr to remoteaddr
+    rv = resolve_and_process(inaddr.s_addr, atoi(target_port), IPPROTO_TCP, 0, NULL, NULL, remoteaddr, remoteaddrlen);
+
+    if (rv < 0) {
+        return rv;
+    }
+
+    *fd = rv;
+    return 0;
+}
+
+int bind_and_accept_tcp_socket(int *fd, char *server_port, struct sockaddr *remoteaddr, socklen_t *remoteaddrlen) {
+    int rv, listen_fd;
+
+    rv = resolve_and_process(htonl(INADDR_ANY), atoi(server_port), IPPROTO_TCP, 1, NULL, NULL, NULL, NULL);
+
+    if (rv < 0) {
+        return rv;
+    }
+
+    listen_fd = rv;
+
+    // Marks the TCP socket as accepting connections. Connection queue of length 1
+    rv = listen(listen_fd, 1);
+
+    if (rv < 0) {
+        fprintf(stderr, "SPP bridge: listen: %s\n", strerror(errno));
+        return rv;
+    }
+
+    // Blocking call if none pending in the connection queue. Returns a new fd on success
+    rv = accept(listen_fd, remoteaddr, remoteaddrlen);
+
+    if (rv == -1) {
+        fprintf(stderr, "SPP bridge: accept: %s\n", strerror(errno));
+        return rv;
+    }
+
+    close(listen_fd);
+
+    // rv is the fd of the port connected to remote
+    *fd = rv;
+    return 0;
+}
+
+
 void print_cid(const ngtcp2_cid *cid) {
     printf("0x");
     for (int i = 0; i < cid->datalen; i++) {

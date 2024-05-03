@@ -30,34 +30,28 @@ else
     echo "PID $$"
     echo "Non-NMF experiment"
     echo "Starting $client_id"
-    # Run for 1, 2, 4, and 8 streams
-    for ((sc = 1; sc <= 8; sc *= 2));
+    # Run with total payload sizes from 32kb to 512kb
+    for ((kb = 32; kb <= 512; kb *= 2));
     do
-        # Test the congestion control algos on 
-        if [ $sc -eq 8 ]
-        then
-            cc_algos="c b r"
-        else
-            cc_algos="c"
-        fi
-        for cc in $cc_algos
+        # Run for 1 and 4 streamas
+        for sc in 1 4
         do
             echo "Streams: $sc" >> $HOME_DIR/toGround/$logfile
-            # Run with total payload sizes from 8KB to 8MB
-            for ((kb = 8; kb <= 8*1024; kb *= 2));
+            if [ $sc -eq 4 ]
+            then
+                cc_algos="c b"
+            else
+                cc_algos="c"
+            fi
+            for cc in $cc_algos
             do
                 # Calculates bytes per stream
                 let "bytes=$kb * 1024 / $sc"
-                args="-t -p11120 -c$cc"
+                args="-t -t -p11120 -c$cc"
                 # Generate the arguments string with the payload distributed evenly across the streams
                 for ((i = 0; i < sc; i++)); do 
                     args="$args -s$bytes"
                 done
-                if [ $sc -eq 1 ]
-                then
-                    # Also measure inflight time when running single stream
-                    args="-t $args"
-                fi
                 echo "Running experiment with arguments: $args."
                 echo "Streams: $sc; Data: $kb KB; Congestion control: $cc" >> $HOME_DIR/toGround/$logfile
                 $HOME_DIR/bin/$client_id $args | awk '{print strftime("[%d-%m-%Y %H:%M:%S.%f]"), $0}' >> $HOME_DIR/toGround/$logfile

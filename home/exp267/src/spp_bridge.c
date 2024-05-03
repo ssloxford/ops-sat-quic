@@ -39,64 +39,6 @@ typedef struct _incomplete_packet {
     struct _incomplete_packet *next, *last;
 } incomplete_packet;
 
-static int connect_tcp_socket(int *fd, char *target_ip, char *target_port, struct sockaddr *remoteaddr, socklen_t *remoteaddrlen) {
-    int rv;
-
-    struct in_addr inaddr;
-
-    rv = inet_aton(target_ip, &inaddr);
-
-    // 0 for error is correct. https://linux.die.net/man/3/inet_aton
-    if (rv == 0) {
-        // Address provided is invalid
-        return -1;
-    }
-
-    // Opens TCP socket and connects to localhost:target_port, saving the sockaddr to remoteaddr
-    rv = resolve_and_process(inaddr.s_addr, atoi(target_port), IPPROTO_TCP, 0, NULL, NULL, remoteaddr, remoteaddrlen);
-
-    if (rv < 0) {
-        return rv;
-    }
-
-    *fd = rv;
-    return 0;
-}
-
-static int bind_and_accept_tcp_socket(int *fd, char *server_port, struct sockaddr *remoteaddr, socklen_t *remoteaddrlen) {
-    int rv, listen_fd;
-
-    rv = resolve_and_process(htonl(INADDR_ANY), atoi(server_port), IPPROTO_TCP, 1, NULL, NULL, NULL, NULL);
-
-    if (rv < 0) {
-        return rv;
-    }
-
-    listen_fd = rv;
-
-    // Marks the TCP socket as accepting connections. Connection queue of length 1
-    rv = listen(listen_fd, 1);
-
-    if (rv < 0) {
-        fprintf(stderr, "SPP bridge: listen: %s\n", strerror(errno));
-        return rv;
-    }
-
-    // Blocking call if none pending in the connection queue. Returns a new fd on success
-    rv = accept(listen_fd, remoteaddr, remoteaddrlen);
-
-    if (rv == -1) {
-        fprintf(stderr, "SPP bridge: accept: %s\n", strerror(errno));
-        return rv;
-    }
-
-    close(listen_fd);
-
-    // rv is the fd of the port connected to remote
-    *fd = rv;
-    return 0;
-}
-
 static void add_to_node(const SPP *spp, incomplete_packet *node) {
     int payload_length = SPP_PAYLOAD_LENGTH(spp->primary_header.packet_data_length);
 
@@ -147,7 +89,7 @@ static incomplete_packet* insert_new_node(const SPP *spp, incomplete_packet *las
     return node;
 }
 
-static int handle_spp(int udp_fd, uint8_t *buf, size_t pktlen, incomplete_packet *incomp_pkts, const struct sockaddr *udp_addr, socklen_t addrlen, int debug) {
+static int handle_spp(int udp_fd, const uint8_t *buf, size_t pktlen, incomplete_packet *incomp_pkts, const struct sockaddr *udp_addr, socklen_t addrlen, int debug) {
     int rv;
 
     uint64_t ts = timestamp_ms();
@@ -462,7 +404,7 @@ int main(int argc, char **argv) {
             if (debug) printf("SPP bridge: TCP message recieved\n");
 
             // Wait to be able to read a full header
-            rv = recv(tcp_fd, buf, SPP_PRIM_HEADER_LEN, MSG_WAITALL);
+            rv = recv(tcp_fd, buf, SPP_HEADER_LEN, MSG_WAITALL);
 
             if (rv == 0) {
                 printf("SPP bridge: Remote shutdown TCP connection\n");
@@ -472,15 +414,28 @@ int main(int argc, char **argv) {
                 continue;
             }
 
-            if (debug) printf("SPP bridge: Successfully read header of %d bytes\n", rv);
+            if (!verify_checksum(buf)) {
+                // The received header is invalid. The packet length may be corrupted so drop everything we've received and not yet processed
+                for (;;) {
+                    rv = recv(tcp_fd, buf, sizeof(buf), MSG_DONTWAIT);
+                    if (rv == -1) {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                            // We've depleated the TCP receive queue
+                            break;
+                        }
+                    }
+                }
+                // Return to the top of the server loop
+                continue;
+            }
 
             // Data length field is one less than the actual length of the field
-            spp_data_length = get_spp_data_length(buf) + 1;
+            spp_data_length = get_spp_data_length(buf) + 1 - SPP_SEC_HEADER_LEN;
 
             // Wait to recieve the body of the SPP, then process it
-            rv = recv(tcp_fd, buf+SPP_PRIM_HEADER_LEN, spp_data_length, MSG_WAITALL);
+            rv = recv(tcp_fd, buf+SPP_HEADER_LEN, spp_data_length, MSG_WAITALL);
 
-            if (debug) printf("SPP bridge: Packet of length %zu in total successfully read\n", spp_data_length+SPP_PRIM_HEADER_LEN);
+            if (debug) printf("SPP bridge: Packet of length %zu in total successfully read\n", spp_data_length+SPP_HEADER_LEN);
 
             if (rv == 0) {
                 printf("SPP bridge: Remote shutdown TCP connection\n");
@@ -492,7 +447,7 @@ int main(int argc, char **argv) {
 
             ts = timestamp_ms();
             // TCP packet recieved
-            rv = handle_spp(udp_fd, buf, rv+SPP_PRIM_HEADER_LEN, &incomp_pkts, (struct sockaddr*) &udp_remote, udp_remotelen, debug);
+            rv = handle_spp(udp_fd, buf, rv+SPP_HEADER_LEN, &incomp_pkts, (struct sockaddr*) &udp_remote, udp_remotelen, debug);
 
             if (debug) printf("Handling SPP took %"PRIu64"ms\n", timestamp_ms() - ts);
 

@@ -77,16 +77,35 @@ int serialise_spp(uint8_t *buf, size_t buflen, const SPP *spp) {
     buf[8] |= 0xf0 & (spp->secondary_header.udp_frag_count << 4);
     buf[8] |= 0x0f & (spp->secondary_header.udp_frag_num);
 
-    // Checksum
-    for (int i = 0; i < SPP_HEADER_LEN; i++) {
-        // Bitwise xor for the header checksum. Obviously do not include the checksum field in that
-        if (i != SPP_CHECKSUM_OFFSET) buf[SPP_CHECKSUM_OFFSET] ^= buf[i];
-    }
+    buf[9] |= 0xff & calculate_checksum(buf);
 
     size_t data_field_len = packet_length - SPP_HEADER_LEN;
     memcpy(buf+SPP_HEADER_LEN, spp->user_data, data_field_len);
 
     return 0;
+}
+
+uint8_t calculate_checksum(const uint8_t *header) {
+    // We use a modified (8 bit rather than 16 bit) version of the Internet Checksum Algorithm (RFC1071)
+    uint8_t check_sum = 0;
+
+    for (int i = 0; i < SPP_HEADER_LEN; i++) {
+        if (i != SPP_CHECKSUM_OFFSET) {
+            // We don't add the checksum byte to the checksum
+            if (check_sum > UINT8_MAX - ~header[i]) {
+                // Overflow will occur. End around carry
+                check_sum += 1;
+            }
+            // Add the 1s compliment
+            check_sum += ~header[i];
+        }
+    }
+
+    return check_sum;
+}
+
+int verify_checksum(const uint8_t *header) {
+    return calculate_checksum(header) == header[SPP_CHECKSUM_OFFSET];
 }
 
 size_t get_spp_data_length(const uint8_t *buf) {
@@ -99,6 +118,11 @@ size_t get_spp_data_length(const uint8_t *buf) {
 }
 
 int deserialise_spp(const uint8_t *buf, SPP *spp) {
+    if (!verify_checksum(buf)) {
+        // Checksum showed corrupted packet header. Drop packet
+        return -1;
+    }
+
     // Primary header
     spp->primary_header.packet_version_number = 0x07 & (buf[0] >> 5);
     
@@ -115,17 +139,6 @@ int deserialise_spp(const uint8_t *buf, SPP *spp) {
     spp->secondary_header.udp_packet_num = 0xffff & ((buf[6] << 8) | buf[7]);
     spp->secondary_header.udp_frag_count = 0x0f & (buf[8] >> 4);
     spp->secondary_header.udp_frag_num = 0x0f & buf[8];
-
-    uint8_t var_checksum = 0;
-    for (int i = 0; i < SPP_HEADER_LEN; i++) {
-        // By including checksum, the total should come to 0
-        var_checksum ^= buf[i];
-    }
-
-    if (var_checksum != 0) {
-        // Checksum showed corrupted packet header. Drop packet
-        return -1;
-    }
 
     // It is assumed that the buffer in spp->user_data is big enough to take the data
     // It's also assumed that the buffer provided is long enough to hold all the promised data
@@ -151,6 +164,7 @@ int fragment_data(SPP **spp, const uint8_t *data, size_t datalen, int *packets_m
     *spp = calloc(packets_needed, sizeof(SPP));
 
     if (*spp == NULL) {
+        // Out of memory
         return -1;
     }
 

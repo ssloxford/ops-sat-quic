@@ -1,11 +1,11 @@
-#ifndef INCLUDE_H
-#define INCLUDE_H
+#ifndef UTILS_H
+#define UTILS_H
 
 #include <ngtcp2/ngtcp2.h>
 
 #include <netdb.h>
 
-#define BUF_SIZE 32*1024 // 32kb buffer
+#define BUF_SIZE 2*1024 // 2kb buffer
 #define MAX_UDP_PAYLOAD NGTCP2_MAX_UDP_PAYLOAD_SIZE
 
 void rand_init();
@@ -23,6 +23,10 @@ int resolve_and_process(in_addr_t target_host, int target_port, int protocol, in
 int bind_udp_socket(int *fd, const char *server_port);
 
 int connect_udp_socket(int *fd, const char *server_ip, const char *server_port, struct sockaddr *remoteaddr, socklen_t *remoteaddrlen);
+
+int connect_tcp_socket(int *fd, char *target_ip, char *target_port, struct sockaddr *remoteaddr, socklen_t *remoteaddrlen);
+
+int bind_and_accept_tcp_socket(int *fd, char *server_port, struct sockaddr *remoteaddr, socklen_t *remoteaddrlen);
 
 void print_cid(const ngtcp2_cid *cid);
 

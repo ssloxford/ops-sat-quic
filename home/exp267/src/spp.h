@@ -111,6 +111,10 @@ int construct_spp(SPP *spp, const uint8_t *payload, size_t payloadlen, uint8_t *
 
 int serialise_spp(uint8_t *buf, size_t buflen, const SPP *spp);
 
+int verify_checksum(const uint8_t *header);
+
+uint8_t calculate_checksum(const uint8_t *header);
+
 size_t get_spp_data_length(const uint8_t *buf);
 
 int deserialise_spp(const uint8_t *buf, SPP *spp);
