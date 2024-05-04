@@ -378,7 +378,7 @@ int main(int argc, char **argv) {
                 rand_uint = rand();
 
                 if (rand_uint < corruption_cutoff) {
-                    printf("Corrupting leftbound chunk of length %d\n", rv);
+                    printf("Corrupting left bound chunk of length %d\n", rv);
                     for (int offset = 0; offset < rv; offset += 0x0f & rand_byte) {
                         rand_bytes(&rand_byte, 1);
                         // Corrupt this byte
