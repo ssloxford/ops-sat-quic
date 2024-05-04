@@ -140,6 +140,11 @@ int deserialise_spp(const uint8_t *buf, SPP *spp) {
     spp->secondary_header.udp_frag_count = 0x0f & (buf[8] >> 4);
     spp->secondary_header.udp_frag_num = 0x0f & buf[8];
 
+    if (spp->secondary_header.udp_frag_num >= spp->secondary_header.udp_frag_count) {
+        // Should only happen on undetected header corruption
+        return -1;
+    }
+
     // It is assumed that the buffer in spp->user_data is big enough to take the data
     // It's also assumed that the buffer provided is long enough to hold all the promised data
     memcpy(spp->user_data, buf + SPP_HEADER_LEN, SPP_PAYLOAD_LENGTH(spp->primary_header.packet_data_length));

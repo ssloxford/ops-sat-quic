@@ -89,7 +89,7 @@ static incomplete_packet* insert_new_node(const SPP *spp, incomplete_packet *las
     return node;
 }
 
-static int handle_spp(int udp_fd, const uint8_t *buf, size_t pktlen, incomplete_packet *incomp_pkts, const struct sockaddr *udp_addr, socklen_t addrlen, int debug) {
+static int handle_spp(int udp_fd, const uint8_t *buf, incomplete_packet *incomp_pkts, const struct sockaddr *udp_addr, socklen_t addrlen, int debug) {
     int rv;
 
     uint64_t ts = timestamp_ms();
@@ -283,6 +283,8 @@ int main(int argc, char **argv) {
     char *udp_target_port, *tcp_target_port = TCP_DEFAULT_PORT;
     int tcp_client = 0, udp_client = 0, udp_port_set = 0, udp_remote_set = 0, debug = 0;
 
+    size_t bytes_purged;
+
     uint64_t ts = timestamp_ms();
 
     // Process option flags
@@ -413,6 +415,7 @@ int main(int argc, char **argv) {
             if (!verify_checksum(buf)) {
                 // The received header is invalid. The packet length may be corrupted so drop everything we've received and not yet processed
                 if (debug >= 1) printf("Corrupted header received, purging TCP queue\n");
+                bytes_purged = 0;
                 for (;;) {
                     rv = recv(tcp_fd, buf, sizeof(buf), MSG_DONTWAIT);
                     if (rv == -1) {
@@ -421,8 +424,9 @@ int main(int argc, char **argv) {
                             break;
                         }
                     }
+                    bytes_purged += rv;
                 }
-                if (debug >= 1) printf("TCP queue purged\n");
+                if (debug >= 1) printf("TCP queue purged after %zu bytes purged\n", bytes_purged);
                 // Return to the top of the server loop
                 continue;
             }
@@ -445,7 +449,7 @@ int main(int argc, char **argv) {
 
             ts = timestamp_ms();
             // TCP packet recieved
-            rv = handle_spp(udp_fd, buf, rv+SPP_HEADER_LEN, &incomp_pkts, (struct sockaddr*) &udp_remote, udp_remotelen, debug);
+            rv = handle_spp(udp_fd, buf, &incomp_pkts, (struct sockaddr*) &udp_remote, udp_remotelen, debug);
 
             if (debug) printf("Handling SPP took %"PRIu64"ms\n", timestamp_ms() - ts);
 
