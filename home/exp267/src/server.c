@@ -657,6 +657,11 @@ static int server_read_step(server *s) {
             if (rv == NGTCP2_ERR_CRYPTO) {
                 fprintf(stderr, "TLS alert: %d\n", ngtcp2_conn_get_tls_alert(s->conn));
             }
+            if (rv == NGTCP2_ERR_DROP_CONN) {
+                // Need to drop the connection silently
+                server_drop_connection(s);
+                return 0;
+            }
             return rv; 
         }
 

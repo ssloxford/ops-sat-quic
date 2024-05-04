@@ -211,7 +211,7 @@ int fragment_data(SPP **spp, const uint8_t *data, size_t datalen, int *packets_m
 }
 
 int free_spp_array(SPP *array, size_t arraylen) {
-    for (int i = 0; i < arraylen; i++) {
+    for (size_t i = 0; i < arraylen; i++) {
         free(array[i].user_data);
     }
     

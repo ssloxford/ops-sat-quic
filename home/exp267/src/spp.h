@@ -12,7 +12,7 @@
 
 // Specific to ESA project
 #define SPP_MTU 256
-#define SPP_APID 1024 + 267
+#define SPP_APID (1024 + 267)
 
 #define SPP_HEADER_LEN (SPP_PRIM_HEADER_LEN + SPP_SEC_HEADER_LEN)
 #define SPP_MAX_DATA_LEN (SPP_MTU - SPP_HEADER_LEN)

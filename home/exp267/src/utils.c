@@ -245,7 +245,7 @@ int bind_and_accept_tcp_socket(int *fd, char *server_port, struct sockaddr *remo
 
 void print_cid(const ngtcp2_cid *cid) {
     printf("0x");
-    for (int i = 0; i < cid->datalen; i++) {
+    for (size_t i = 0; i < cid->datalen; i++) {
         printf("%02x", cid->data[i]);
     }
 }

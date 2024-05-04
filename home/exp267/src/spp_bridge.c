@@ -103,7 +103,6 @@ static int handle_spp(int udp_fd, const uint8_t *buf, size_t pktlen, incomplete_
 
     spp.user_data = spp_payload;
 
-    // Bytes deserialised is incremented by pktlen
     rv = deserialise_spp(buf, &spp);
 
     if (rv == -1) {
@@ -270,16 +269,13 @@ int main(int argc, char **argv) {
     // The list is empty
     incomp_pkts.next = NULL;
 
-    // Header to let TCP inspect SPP packet size to read
-    SPP_primary_header header;
-
     // Allocate the buffers here for performance (avoids allocating largeish memory on the stack for every call)
     uint8_t buf[BUF_SIZE];
 
     // Must manually track the UDP packets that pass through to allow for reconstruction
     uint16_t udp_count = 0;
     // Total number of spp packets sent, to keep track of packet numbers in SPP headers
-    uint8_t spp_count = 0;
+    uint16_t spp_count = 0;
     size_t spp_data_length;
 
     struct pollfd polls[2];
@@ -416,6 +412,7 @@ int main(int argc, char **argv) {
 
             if (!verify_checksum(buf)) {
                 // The received header is invalid. The packet length may be corrupted so drop everything we've received and not yet processed
+                if (debug >= 1) printf("Corrupted header received, purging TCP queue\n");
                 for (;;) {
                     rv = recv(tcp_fd, buf, sizeof(buf), MSG_DONTWAIT);
                     if (rv == -1) {
@@ -425,6 +422,7 @@ int main(int argc, char **argv) {
                         }
                     }
                 }
+                if (debug >= 1) printf("TCP queue purged\n");
                 // Return to the top of the server loop
                 continue;
             }
