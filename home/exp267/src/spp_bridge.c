@@ -451,7 +451,7 @@ int main(int argc, char **argv) {
             // TCP packet recieved
             rv = handle_spp(udp_fd, buf, &incomp_pkts, (struct sockaddr*) &udp_remote, udp_remotelen, debug);
 
-            if (debug) printf("Handling SPP took %"PRIu64"ms\n", timestamp_ms() - ts);
+            if (debug >= 2) printf("Handling SPP took %"PRIu64"ms\n", timestamp_ms() - ts);
 
             if (rv < 0) {
                 if (rv == ERROR_SOCKET) {

@@ -53,7 +53,7 @@ waiting_data* make_node(const uint8_t *data, size_t datalen, int delay) {
     node->next = NULL;
 
     // Time recieved
-    node->send_time = timestamp_ms() + delay;
+    node->send_time = timestamp() + (1000000ull * delay);
 
     return node;
 }
@@ -226,7 +226,7 @@ int main(int argc, char **argv) {
         if (left_waiting_datas.next == NULL) {
             left_timeout = -1;
         } else {
-            left_timeout = left_waiting_datas.next->send_time - timestamp_ms();
+            left_timeout = (left_waiting_datas.next->send_time - timestamp()) / 1000000ull;
             if (left_timeout < 0) left_timeout = 0;
         }
 
@@ -234,7 +234,7 @@ int main(int argc, char **argv) {
         if (right_waiting_datas.next == NULL) {
             right_timeout = -1;
         } else {
-            right_timeout = right_waiting_datas.next->send_time - timestamp_ms();
+            right_timeout = (right_waiting_datas.next->send_time - timestamp()) / 1000000ull;
             if (right_timeout < 0) right_timeout = 0;
         }
 
@@ -260,7 +260,7 @@ int main(int argc, char **argv) {
             // Process right packets
             for (pkt_ptr = right_waiting_datas.next; pkt_ptr != NULL; pkt_ptr = right_waiting_datas.next) {
                 // Packets are arranged in ascending order. If this one is still waiting, we can break.
-                if (pkt_ptr->send_time > timestamp_ms()) break;
+                if (pkt_ptr->send_time > timestamp()) break;
 
                 rv = send(right_fd, pkt_ptr->data, pkt_ptr->datalen, 0);
 
@@ -278,7 +278,7 @@ int main(int argc, char **argv) {
 
             // Exactly as above, but with the left queue
             for (pkt_ptr = left_waiting_datas.next; pkt_ptr != NULL; pkt_ptr = left_waiting_datas.next) {
-                if (pkt_ptr->send_time > timestamp_ms()) break;
+                if (pkt_ptr->send_time > timestamp()) break;
                 
                 rv = send(left_fd, pkt_ptr->data, pkt_ptr->datalen, 0);
                 

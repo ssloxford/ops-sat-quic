@@ -141,13 +141,17 @@ int deserialise_spp(const uint8_t *buf, SPP *spp) {
     spp->secondary_header.udp_frag_num = 0x0f & buf[8];
 
     if (spp->secondary_header.udp_frag_num >= spp->secondary_header.udp_frag_count) {
-        // Should only happen on undetected header corruption
+        // This fragment claims to be indexed greater than the number of fragments in this packet. Treat this as corrupt header
         return -1;
     }
 
-    // It is assumed that the buffer in spp->user_data is big enough to take the data
-    // It's also assumed that the buffer provided is long enough to hold all the promised data
-    memcpy(spp->user_data, buf + SPP_HEADER_LEN, SPP_PAYLOAD_LENGTH(spp->primary_header.packet_data_length));
+    if (SPP_PAYLOAD_LENGTH(get_spp_data_length(buf)) > SPP_MAX_DATA_LEN) {
+        // The claimed payload length is longer than the maximum supported. Treat this as corrupt header
+        return -1;
+    }
+
+    // It is assumed that the this will not overrun the end of buf
+    memcpy(spp->user_data, buf + SPP_HEADER_LEN, SPP_PAYLOAD_LENGTH(get_spp_data_length(buf)));
 
     return 0;
 }
