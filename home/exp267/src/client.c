@@ -221,6 +221,9 @@ static int client_ngtcp2_init(client *c, char* server_ip, char *server_port) {
     // Timestamp in nanosecond resolution
     settings.initial_ts = timestamp();
 
+    // Give up on the handshake after 1 minute
+    settings.handshake_timeout = 60ull * NGTCP2_SECONDS;
+
     // Enable debugging
     if (c->settings->debug >= 3) {
         settings.log_printf = debug_log; // ngtcp2 debugging
