@@ -208,8 +208,8 @@ int connect_tcp_socket(int *fd, char *target_ip, char *target_port, struct socka
     return 0;
 }
 
-int bind_and_accept_tcp_socket(int *fd, char *server_port, struct sockaddr *remoteaddr, socklen_t *remoteaddrlen) {
-    int rv, listen_fd;
+int bind_tcp_socket(int *fd, char *server_port) {
+    int rv;
 
     rv = resolve_and_process(htonl(INADDR_ANY), atoi(server_port), IPPROTO_TCP, 1, NULL, NULL, NULL, NULL);
 
@@ -217,15 +217,21 @@ int bind_and_accept_tcp_socket(int *fd, char *server_port, struct sockaddr *remo
         return rv;
     }
 
-    listen_fd = rv;
+    *fd = rv;
 
     // Marks the TCP socket as accepting connections. Connection queue of length 1
-    rv = listen(listen_fd, 1);
+    rv = listen(*fd, 1);
 
     if (rv < 0) {
         fprintf(stderr, "SPP bridge: listen: %s\n", strerror(errno));
         return rv;
     }
+
+    return 0;
+}
+
+int accept_tcp_connection(int *fd, int listen_fd, struct sockaddr *remoteaddr, socklen_t *remoteaddrlen) {
+    int rv;
 
     // Blocking call if none pending in the connection queue. Returns a new fd on success
     rv = accept(listen_fd, remoteaddr, remoteaddrlen);
@@ -234,8 +240,6 @@ int bind_and_accept_tcp_socket(int *fd, char *server_port, struct sockaddr *remo
         fprintf(stderr, "SPP bridge: accept: %s\n", strerror(errno));
         return rv;
     }
-
-    close(listen_fd);
 
     // rv is the fd of the port connected to remote
     *fd = rv;

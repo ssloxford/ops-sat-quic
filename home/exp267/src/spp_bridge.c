@@ -17,8 +17,11 @@
 
 #define TCP_DEFAULT_PORT "4096"
 #define UDP_DEFAULT_PORT "11120"
-// Destroy the packet if it's incomplete and no new fragment has been recieved in the last 10 seconds
-#define TIMEOUT_MS (10 * 1000)
+// Destroy the packet if it's incomplete and no new fragment has been recieved in the last 20 seconds
+#define TIMEOUT_MS (20 * 1000)
+#define MAX_RECONNECT_ATTEMPTS 30
+// How long (in ms) to wait between attempts to reconnect
+#define RECONNECTION_DELAY (2 * 1000)
 
 typedef struct _incomplete_packet {
     uint16_t packet_number;
@@ -258,7 +261,7 @@ void deinit(int udp_fd, int tcp_fd, incomplete_packet *incomp_pkts) {
 
 int main(int argc, char **argv) {
     int rv, packets_sent;
-    int tcp_fd, udp_fd;
+    int tcp_fd, tcp_listen_fd, udp_fd;
 
     struct sockaddr_storage udp_remote, tcp_remote;
     socklen_t udp_remotelen = sizeof(udp_remote), tcp_remotelen = sizeof(tcp_remote);
@@ -285,11 +288,13 @@ int main(int argc, char **argv) {
 
     struct pollfd polls[2];
 
-    char *udp_target_port, *tcp_target_port = TCP_DEFAULT_PORT;
-    int tcp_client = 0, udp_client = 0, udp_port_set = 0, udp_remote_set = 0, debug = 0;
+    char *udp_target_port = UDP_DEFAULT_PORT, *tcp_target_port = TCP_DEFAULT_PORT;
+    int tcp_client = 0, udp_client = 0, udp_remote_set = 0, debug = 0;
 
     int recover_mode = 0;
     size_t bytes_purged;
+
+    int tcp_connected = 0, connection_attempts = 0;
 
     uint64_t ts = timestamp_ms();
 
@@ -305,7 +310,6 @@ int main(int argc, char **argv) {
                 break;
             case 'p':
                 udp_target_port = optarg;
-                udp_port_set = 1;
                 break;
             case 'q':
                 tcp_target_port = optarg;
@@ -320,11 +324,6 @@ int main(int argc, char **argv) {
                 printf("SPP bridge: Unknown option -%c\n", optopt);
                 break;
         }
-    }
-
-    if (!udp_port_set) {
-        fprintf(stderr, "SPP bridge: Must set UDP port to listen on. See help string\n");
-        return 0;
     }
 
     // Init the UDP socket
@@ -343,32 +342,57 @@ int main(int argc, char **argv) {
     }
     
     if (debug >= 1) printf("SPP bridge: Processing TCP port %s as %s\n", tcp_target_port, tcp_client ? "client" : "server");
-
-    // Init the TCP connection
-    if (tcp_client) {
-        // Have it initiate tcp connection
-        rv = connect_tcp_socket(&tcp_fd, "127.0.0.1", tcp_target_port, (struct sockaddr*) &tcp_remote, &tcp_remotelen);
-    } else {
-        // Opens a socket to listen for TCP connections on and binds it to TCP port
-        // Must then listen on that port and accept 
-        rv = bind_and_accept_tcp_socket(&tcp_fd, tcp_target_port, (struct sockaddr*) &tcp_remote, &tcp_remotelen);
-    }
     
-    if (rv < 0) {
-        fprintf(stderr, "SPP bridge: Error when establishing TCP connection\n");
-        return rv;
+    if (!tcp_client) {
+        rv = bind_tcp_socket(&tcp_listen_fd, tcp_target_port);
+
+        if (rv < 0) {
+            fprintf(stderr, "SPP bridge: Error when establishing TCP connection\n");
+            return rv;
+        }
     }
 
     if (debug >= 1) printf("SPP bridge: Successfully established connections\n");
 
     polls[0].fd = udp_fd;
-    polls[1].fd = tcp_fd;
 
     polls[0].events = polls[1].events = POLLIN;
 
-    if (debug >= 3) printf("Intialisation took %"PRIu64"ms\n", timestamp_ms() - ts);
+    if (debug >= 3) printf("SPP bridge: Intialisation took %"PRIu64"ms\n", timestamp_ms() - ts);
 
     for (;;) {
+        if (!tcp_connected) {
+            // Attempt to establish/re-establish TCP connection
+            if (tcp_client) {
+                // Have it initiate tcp connection
+                rv = connect_tcp_socket(&tcp_fd, "127.0.0.1", tcp_target_port, (struct sockaddr*) &tcp_remote, &tcp_remotelen);
+
+                if (rv < 0) {
+                    connection_attempts++;
+                    if (connection_attempts >= MAX_RECONNECT_ATTEMPTS) {
+                        // We've hit the maximum number of reconnection attempts without success, so terminate.
+                        break;
+                    }
+                    // Wait for the required delay time, then loop back around to reattempt the connection. Sleep takes it's argument in seconds.
+                    sleep(1e-3 * RECONNECTION_DELAY);
+                    continue;
+                }
+            } else {
+                // Opens a socket to listen for TCP connections on and binds it to TCP port
+                // Must then listen on that port and accept 
+                rv = accept_tcp_connection(&tcp_fd, tcp_listen_fd, (struct sockaddr*) &tcp_remote, &tcp_remotelen);
+
+                if (rv < 0) {
+                    connection_attempts++;
+                    continue;
+                }
+            }
+
+            connection_attempts = 0;
+            tcp_connected = 1;
+            polls[1].fd = tcp_fd;
+        }
+
         if (udp_remote_set) {
             // Wait for either connection to have data
             poll(polls, 2, -1);
@@ -410,6 +434,13 @@ int main(int argc, char **argv) {
 
             if (recover_mode) {
                 rv = recv(tcp_fd, buf, SPP_HEADER_LEN, MSG_PEEK);
+
+                if (rv == 0) {
+                    if (debug >= 1) printf("SPP bridge: Remote closed TCP connection\n");
+                    tcp_connected = 0;
+                    continue;
+                }
+
                 if (rv == -1) {
                     fprintf(stderr, "SPP bridge: Error when receiving TCP message: %s\n", strerror(errno));
                     continue;
@@ -443,8 +474,9 @@ int main(int argc, char **argv) {
             rv = recv(tcp_fd, buf, SPP_HEADER_LEN, MSG_WAITALL);
 
             if (rv == 0) {
-                printf("SPP bridge: Remote shutdown TCP connection\n");
-                break;
+                if (debug >= 1) printf("SPP bridge: Remote closed TCP connection\n");
+                tcp_connected = 0;
+                continue;
             } else if (rv == -1) {
                 fprintf(stderr, "SPP bridge: Error when receiving TCP message: %s\n", strerror(errno));
                 continue;
@@ -468,8 +500,9 @@ int main(int argc, char **argv) {
             if (debug >= 2) printf("SPP bridge: Packet of length %zu in total successfully read\n", spp_data_length+SPP_HEADER_LEN);
 
             if (rv == 0) {
-                printf("SPP bridge: Remote shutdown TCP connection\n");
-                break;
+                if (debug >= 1) printf("SPP bridge: Remote closed TCP connection\n");
+                tcp_connected = 0;
+                continue;
             } else if (rv == -1) {
                 fprintf(stderr, "SPP bridge: Error when receiving TCP message: %s\n", strerror(errno));
                 continue;
