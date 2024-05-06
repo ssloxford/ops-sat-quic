@@ -15,8 +15,8 @@ if [ $BRIDGE_PROCESSES -ge 1 ]
 then
     echo "$bridge_id is already running. No need to restart it."
 else
-    echo "Starting bridge $bridge_id"
-    $HOME_DIR/bin/$bridge_id -p11120 -t -q9999 &
+    echo "Starting bridge $bridge_id to connect to port `cat ./spp_port`"
+    $HOME_DIR/bin/$bridge_id -p11120 -t -q`cat ./spp_port` &
     BRIDGE_PID=$(ps u | tr -s " " | grep -iw "$bridge_id" | grep -vE 'grep|start|su' | cut -d' ' -f2)
     echo "Bridge PID $BRIDGE_PID"
 fi
