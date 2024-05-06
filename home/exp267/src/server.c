@@ -21,7 +21,7 @@ static int server_acked_stream_data_offset_cb(ngtcp2_conn *conn, int64_t stream_
     server *s = user_data;
     stream *stream_n = stream_data;
 
-    return acked_stream_data_offset_cb(conn, offset, datalen, stream_n, s->settings->timing);
+    return acked_stream_data_offset_cb(offset, datalen, stream_n, s->settings->timing);
 }
 
 static int server_stream_open_cb(ngtcp2_conn *conn, int64_t incoming_stream_id, void *user_data) {
@@ -142,7 +142,7 @@ static int server_stream_close_cb(ngtcp2_conn *conn, uint32_t flags, int64_t str
             printf("Stream %"PRId64" closed in %"PRId64" after %"PRId64" bytes\n", stream_id, timestamp_ms() - stream_n->stream_opened, stream_n->stream_offset);
         }
 
-        return stream_close_cb(stream_n, s->streams);
+        return stream_close_cb(stream_n, s->streams, s->multiplex_ctx);
     } else {
         // Client initiated stream
         if (s->settings->reply) {
@@ -186,6 +186,10 @@ static int server_stream_close_cb(ngtcp2_conn *conn, uint32_t flags, int64_t str
     }
 
     return 0;
+}
+
+static void server_rand_cb(uint8_t *dest, size_t destlen, const ngtcp2_rand_ctx *rand_ctx) {
+    rand_cb(dest, destlen);
 }
 
 static int server_push_cid(server *s, const ngtcp2_cid *cid) {
@@ -332,7 +336,7 @@ static int server_settings_init(ngtcp2_callbacks *callbacks, ngtcp2_settings *se
         NULL, /* recv_retry */
         NULL, /* extend_max_local_streams_bidi */
         NULL, /* extend_max_local_streams_uni */
-        rand_cb, // Not provided by library
+        server_rand_cb, // Not provided by library
         server_get_new_connection_id_cb, /* get_new_connection_id */
         server_remove_connection_id_cb, /* remove_connection_id */
         ngtcp2_crypto_update_key_cb,
@@ -416,7 +420,7 @@ static int server_init(server *s, char *server_port) {
 
     // Initialise the multiplex context
     // Last sent is initialised to the dummy head
-    s->multiplex_ctx->streams_list = s->multiplex_ctx->last_sent = s->streams;
+    s->multiplex_ctx->streams_list = s->multiplex_ctx->next_send = s->streams;
 
     // Dummy header
     s->reply_stream = malloc(sizeof(reply_on));
@@ -461,7 +465,7 @@ static int server_drop_connection(server *s) {
     // The loop repeatedly pops streams from the front of the list until they're all deleted
     for (stream *stream = s->streams->next; stream != NULL; stream = s->streams->next) {
         // Deallocate the memory associated with this stream and remove it from the list
-        stream_close_cb(stream, s->streams);
+        stream_close_cb(stream, s->streams, NULL);
     }
 
     // Delete all the reply on nodes
@@ -477,7 +481,7 @@ static int server_drop_connection(server *s) {
     }
 
     // Reset the stream multiplexing context
-    s->multiplex_ctx->last_sent = s->streams;
+    s->multiplex_ctx->next_send = s->streams;
 
     ngtcp2_conn_del(s->conn);
 

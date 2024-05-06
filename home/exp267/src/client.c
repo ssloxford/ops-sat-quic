@@ -23,7 +23,7 @@ static int client_acked_stream_data_offset_cb(ngtcp2_conn *conn, int64_t stream_
     client *c = user_data;
     stream *stream_n = stream_data;
 
-    return acked_stream_data_offset_cb(conn, offset, datalen, stream_n, c->settings->timing);
+    return acked_stream_data_offset_cb(offset, datalen, stream_n, c->settings->timing);
 }
 
 static int client_stream_close_cb(ngtcp2_conn *conn, uint32_t flags, int64_t stream_id, uint64_t app_error_code, void *user_data, void *stream_data) {
@@ -49,7 +49,7 @@ static int client_stream_close_cb(ngtcp2_conn *conn, uint32_t flags, int64_t str
             }
         }
 
-        return stream_close_cb(stream_n, c->streams);
+        return stream_close_cb(stream_n, c->streams, c->multiplex_ctx);
     }
 
     return 0;
@@ -71,7 +71,7 @@ static int client_extend_max_local_streams_uni_cb(ngtcp2_conn *conn, uint64_t ma
 
     if (c->settings->debug >= 1) printf("Client opening new streams. Max streams: %"PRIu64"\n", max_streams);
 
-    for (int i = 0; i < c->inputslen; i++) {
+    for (size_t i = 0; i < c->inputslen; i++) {
         if (i < max_streams) {
             // Open a stream for this input
             c->inputs[i].stream = open_stream(c->conn);
@@ -103,6 +103,10 @@ static int client_get_new_connection_id_cb(ngtcp2_conn *conn, ngtcp2_cid *cid, u
     }
 
     return 0;
+}
+
+static void client_rand_cb(uint8_t *dest, size_t destlen, const ngtcp2_rand_ctx *rand_ctx) {
+    rand_cb(dest, destlen);
 }
 
 static int client_wolfssl_init(client *c) {
@@ -189,7 +193,7 @@ static int client_ngtcp2_init(client *c, char* server_ip, char *server_port) {
         ngtcp2_crypto_recv_retry_cb,
         NULL, /* extend_max_local_streams_bidi */
         client_extend_max_local_streams_uni_cb, /* extend_max_local_streams_uni */
-        rand_cb,
+        client_rand_cb,
         client_get_new_connection_id_cb,
         NULL, /* remove_connection_id */
         ngtcp2_crypto_update_key_cb,
@@ -308,7 +312,7 @@ static int client_init(client *c, char* server_ip, char *server_port, input_sour
 
     // Initialise the multiplex context
     // Last sent is initialised to the dummy head
-    c->multiplex_ctx->streams_list = c->multiplex_ctx->last_sent = c->streams;
+    c->multiplex_ctx->streams_list = c->multiplex_ctx->next_send = c->streams;
 
     c->locallen = sizeof(c->localsock);
     c->remotelen = sizeof(c->remotesock);
@@ -350,12 +354,12 @@ static int client_generate_data(client *c) {
 
     // TODO - Macro the payload size
     uint8_t payload[1024];
-    size_t payloadlen;
+    ssize_t payloadlen;
 
     int to_enqueue;
 
     // Scan through the inputs and enqueue data to respective streams
-    for (int i = 0; i < c->inputslen; i++) {
+    for (size_t i = 0; i < c->inputslen; i++) {
         if (c->inputs[i].stream == NULL) {
             // This input doesn't have an open stream yet. Skip it
             continue;
@@ -562,7 +566,7 @@ static void client_deinit(client *c) {
 
     for (stream *ptr = c->streams->next; ptr != NULL; ptr = c->streams->next) {
         // The callback deallocates the inflight/send queue, deallocates the stream struct, and rejoins the queue
-        stream_close_cb(ptr, c->streams);
+        stream_close_cb(ptr, c->streams, NULL);
     }
 
     // Free the streams dummy header

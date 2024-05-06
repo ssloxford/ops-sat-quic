@@ -18,7 +18,7 @@
 #define TCP_DEFAULT_PORT "4096"
 #define UDP_DEFAULT_PORT "11120"
 // Destroy the packet if it's incomplete and no new fragment has been recieved in the last 10 seconds
-#define TIMEOUT_MS (2 * 1000)
+#define TIMEOUT_MS (10 * 1000)
 
 typedef struct _incomplete_packet {
     uint16_t packet_number;
@@ -36,7 +36,7 @@ typedef struct _incomplete_packet {
     uint64_t timeout;
 
     // Doubly linked list to allow fast insert and removal
-    struct _incomplete_packet *next, *last;
+    struct _incomplete_packet *next;
 } incomplete_packet;
 
 static void add_to_node(const SPP *spp, incomplete_packet *node) {
@@ -53,7 +53,7 @@ static void add_to_node(const SPP *spp, incomplete_packet *node) {
     memcpy(node->partial_payload + (SPP_MAX_DATA_LEN * spp->secondary_header.udp_frag_num), spp->user_data, payload_length);
 }
 
-static incomplete_packet* insert_new_node(const SPP *spp, incomplete_packet *last, incomplete_packet *next) {
+static incomplete_packet* insert_new_node_after(const SPP *spp, incomplete_packet *after) {
     incomplete_packet *node = malloc(sizeof(incomplete_packet));
 
     if (node == NULL) {
@@ -76,13 +76,8 @@ static incomplete_packet* insert_new_node(const SPP *spp, incomplete_packet *las
     node->frags_recieved = 0;
     node->packet_length = 0;
 
-    node->next = next;
-    if (next != NULL) {
-        next->last = node;
-    }
-
-    node->last = last;
-    last->next = node;
+    node->next = after->next;
+    after->next = node;
 
     add_to_node(spp, node);
 
@@ -128,7 +123,7 @@ static int handle_spp(int udp_fd, const uint8_t *buf, incomplete_packet *incomp_
     for (pkt_ptr = prev_ptr->next;;pkt_ptr = prev_ptr->next) {
         if (pkt_ptr == NULL) {
             // At the end of the list. Insert new node on the end
-            found_pkt = insert_new_node(&spp, prev_ptr, pkt_ptr);
+            found_pkt = insert_new_node_after(&spp, prev_ptr);
             if (found_pkt == NULL) {
                 return ERROR_OUT_OF_MEMORY;
             }
@@ -160,7 +155,7 @@ static int handle_spp(int udp_fd, const uint8_t *buf, incomplete_packet *incomp_
             prev_ptr = pkt_ptr;
         } else {
             // next packet number is greater than the search number, so insert here
-            found_pkt = insert_new_node(&spp, prev_ptr, pkt_ptr);
+            found_pkt = insert_new_node_after(&spp, prev_ptr);
             if (found_pkt == NULL) {
                 return ERROR_OUT_OF_MEMORY;
             }
@@ -185,11 +180,8 @@ static int handle_spp(int udp_fd, const uint8_t *buf, incomplete_packet *incomp_
             return -1;
         }
 
-        // Reconnect the linked list
-        found_pkt->last->next = found_pkt->next;
-        if (found_pkt->next != NULL) {
-            found_pkt->next->last = found_pkt->last;
-        }
+        // Reconnect the linked list. Prev_ptr->next == found_pkt, by the invariant of the search loop above
+        prev_ptr->next = found_pkt->next;
 
         // Deallocate the list node and associated buffer
         free(found_pkt->partial_payload);
@@ -199,7 +191,7 @@ static int handle_spp(int udp_fd, const uint8_t *buf, incomplete_packet *incomp_
     return 0;
 }
 
-static int handle_udp_packet(int tcp_fd, uint8_t *buf, size_t buflen, size_t pktlen, uint16_t spp_count, uint8_t udp_count, int *packets_sent, const struct sockaddr* remote_addr, socklen_t remote_addrlen, int debug) {
+static int handle_udp_packet(int tcp_fd, uint8_t *buf, size_t buflen, size_t pktlen, uint16_t spp_count, uint16_t udp_count, int *packets_sent, const struct sockaddr* remote_addr, socklen_t remote_addrlen, int debug) {
     int rv, packets_made;
     size_t bytes_to_send;
 
@@ -252,7 +244,14 @@ void print_helpstring() {
     printf("-d: Enable debug. Default off\n");
 }
 
-void deinit(int udp_fd, int tcp_fd) {
+void deinit(int udp_fd, int tcp_fd, incomplete_packet *incomp_pkts) {
+    for (incomplete_packet *ptr = incomp_pkts->next; ptr != NULL; ptr = incomp_pkts->next) {
+        incomp_pkts->next = ptr->next;
+
+        free(ptr->partial_payload);
+        free(ptr);
+    }
+
     close(udp_fd);
     close(tcp_fd);
 }
@@ -419,8 +418,12 @@ int main(int argc, char **argv) {
                 continue;
             }
 
-            if (!verify_checksum(buf)) {
-                // The received header is invalid. The packet length may be corrupted so drop everything we've received and not yet processed
+            // Data length field is one less than the actual length of the field
+            spp_data_length = get_spp_data_length(buf) + 1 - SPP_SEC_HEADER_LEN;
+
+            if (!verify_checksum(buf) || spp_data_length > SPP_MAX_DATA_LEN) {
+                // The received header is invalid. The packet length may be corrupted so drop everything we've received and not yet processed.
+                // data length condition is there because we treat that field being too long as a corrupt packet, and we must not recv with it since buf will overflow buf
                 if (debug >= 1) printf("Corrupted header received, purging TCP queue\n");
                 bytes_purged = 0;
                 for (;;) {
@@ -437,9 +440,6 @@ int main(int argc, char **argv) {
                 // Return to the top of the server loop
                 continue;
             }
-
-            // Data length field is one less than the actual length of the field
-            spp_data_length = get_spp_data_length(buf) + 1 - SPP_SEC_HEADER_LEN;
 
             // Wait to recieve the body of the SPP, then process it
             rv = recv(tcp_fd, buf+SPP_HEADER_LEN, spp_data_length, MSG_WAITALL);
@@ -465,7 +465,7 @@ int main(int argc, char **argv) {
                     // If the remote is a server that's terminated, also terminate
                     if (udp_client) {
                         rv = -1;
-                        deinit(udp_fd, tcp_fd);
+                        deinit(udp_fd, tcp_fd, &incomp_pkts);
                         return -1;
                     }
                     // Otherwise, wait for the next connection to the local UDP server
@@ -479,7 +479,7 @@ int main(int argc, char **argv) {
         }
     }
 
-    deinit(udp_fd, tcp_fd);
+    deinit(udp_fd, tcp_fd, &incomp_pkts);
 
     return rv;
 }

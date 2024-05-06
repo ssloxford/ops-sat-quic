@@ -39,7 +39,7 @@ typedef struct _stream {
 } stream;
 
 typedef struct _stream_multiplex_ctx {
-    stream *last_sent;
+    stream *next_send;
 
     stream *streams_list;
 } stream_multiplex_ctx;
@@ -67,5 +67,9 @@ int enqueue_message(const uint8_t *payload, size_t payloadlen, int fin, stream *
 stream* open_stream(ngtcp2_conn *conn);
 
 stream* multiplex_streams(stream_multiplex_ctx *ctx);
+
+void update_multiplex_ctx_stream_closing(stream_multiplex_ctx *ctx, stream *closed_stream);
+
+void multiplex_ctx_advance_next_stream(stream_multiplex_ctx *ctx);
 
 #endif

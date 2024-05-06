@@ -26,8 +26,9 @@ void print_helpstring() {
     printf("-c [port]: Opens a client end connected to the specified port\n");
     printf("-d [ms]: Sets the delay applied to data in ms. Default 0\n");
     printf("-r [range]: Sets the range of delay times. Per section delay is in the range d+-r. Default 0\n");
-    printf("-l [chance]: Sets the data section loss chance. Default 0\n");
-    printf("-k [bytes]: Proportion of chunks corrupted (eg. 100 means 1 percent of chunks are corrupted). Default 0 (ie. no corruption)\n");
+    printf("-l [chance]: Sets the SPP loss chance. Default 0\n");
+    printf("-k [chance]: Sets the SPP corruption chance. Default 0\n");
+    printf("-v: Enables debugging. Can be used multiple times to be more verbose\n");
 }
 
 waiting_data* make_node(const uint8_t *data, size_t datalen, int delay) {
@@ -95,6 +96,8 @@ int main(int argc, char **argv) {
     char *left_port, *right_port;
     int left_port_set = 0, right_port_set = 0;
 
+    int debug = 0;
+
     uint8_t buf[BUF_SIZE];
     waiting_data *pkt_ptr;
 
@@ -116,7 +119,7 @@ int main(int argc, char **argv) {
 
     left_waiting_datas.next = right_waiting_datas.next = NULL;
 
-    while ((opt = getopt(argc, argv, "hs:c:d:l:k:r:")) != -1) {
+    while ((opt = getopt(argc, argv, "hs:c:d:l:k:r:v")) != -1) {
         switch (opt) {
             case 'h':
                 print_helpstring();
@@ -150,10 +153,13 @@ int main(int argc, char **argv) {
                 loss_chance = atof(optarg);
                 break;
             case 'k':
-                corruption_chance = 1.0/atoi(optarg);
+                corruption_chance = atof(optarg);
                 break;
             case 'r':
                 delay_range = atoi(optarg);
+                break;
+            case 'v':
+                debug += 1;
                 break;
             case '?':
                 printf("Unknown option -%c\n", optopt);
@@ -333,15 +339,15 @@ int main(int argc, char **argv) {
 
                 // If dropping this packet, free the buffer it's been read into and return to the top of the loop
                 if (discard_packet) {
-                    printf("Dropping right bound SPP\n");
+                    if (debug >= 1) printf("Dropping right bound SPP\n");
                     continue;
                 }
 
                 rand_uint = rand();
 
                 if (rand_uint < corruption_cutoff) {
-                    printf("Corrupting right bound SPP\n");
-                    for (int offset = 0; offset < (rv+SPP_HEADER_LEN); offset += 0x0f & rand_byte) {
+                    if (debug >= 1) printf("Corrupting right bound SPP\n");
+                    for (int offset = 0; offset < (rv+SPP_HEADER_LEN); offset += 1) {
                         rand_bytes(&rand_byte, 1);
                         // Corrupt this byte
                         buf[offset] ^= rand_byte;
@@ -377,15 +383,15 @@ int main(int argc, char **argv) {
 
                 // If dropping this packet, free the buffer it's been read into and return to the top of the loop
                 if (discard_packet) {
-                    printf("Dropping left bound SPP\n");
+                    if (debug >= 1) printf("Dropping left bound SPP\n");
                     continue;
                 }
 
                 rand_uint = rand();
 
                 if (rand_uint < corruption_cutoff) {
-                    printf("Corrupting left bound SPP\n");
-                    for (int offset = 0; offset < (rv+SPP_HEADER_LEN); offset += 0x0f & rand_byte) {
+                    if (debug >= 1) printf("Corrupting left bound SPP\n");
+                    for (int offset = 0; offset < (rv+SPP_HEADER_LEN); offset += 1) {
                         rand_bytes(&rand_byte, 1);
                         // Corrupt this byte
                         buf[offset] ^= rand_byte;

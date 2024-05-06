@@ -88,7 +88,6 @@ ssize_t write_step(ngtcp2_conn *conn, int fd, stream_multiplex_ctx *multi_ctx, s
     // Data and datalen is the data to be written
     // Buf and bufsize is a general use memory allocation (eg. to pass packets to subroutines)
     ssize_t pktlen;
-    struct iovec iov;
 
     ngtcp2_ssize stream_framelen;
 
@@ -134,11 +133,14 @@ ssize_t write_step(ngtcp2_conn *conn, int fd, stream_multiplex_ctx *multi_ctx, s
 
         rv = send_packet(fd, buf, pktlen, sockaddr, sockaddrlen);
 
+        // Indicate we just sent on the stream provided, so advance the round robin pointer
+        multiplex_ctx_advance_next_stream(multi_ctx);
+
         if (rv < 0) {
             return rv;
         }
 
-        if (debug_level >= 2) printf("Sent a stream packet to stream %"PRId64"\n", send_stream->stream_id);
+        if (debug_level >= 2) printf("Sent a stream frame to stream %"PRId64"\n", send_stream->stream_id);
 
         if (stream_framelen != pkt_to_send->payloadlen) {
             // The ammount of data sent was not equal to the ammount of data provided
@@ -341,55 +343,57 @@ stream* open_stream(ngtcp2_conn *conn) {
     return stream_n;
 }
 
-stream* multiplex_streams(stream_multiplex_ctx *ctx) {
-    int last_sent_closed = 1, all_streams_empty = 0;
-
-    stream *stream_to_send = NULL;
-    
-    // Verify that the last_sent stream has not been closed
-    for (stream *ptr = ctx->streams_list; ptr != NULL; ptr = ptr->next) {
-        if (ptr == ctx->last_sent) {
-            // Found the stream in the list
-            last_sent_closed = 0;
-            break;
+void update_multiplex_ctx_stream_closing(stream_multiplex_ctx *ctx, stream *closed_stream) {
+    if (ctx->next_send == closed_stream) {
+        // Update the next send pointer to the stream after the one closed in the order
+        ctx->next_send = closed_stream->next;
+        if (ctx->next_send == NULL) {
+            ctx->next_send = ctx->streams_list;
         }
     }
+}
 
-    if (last_sent_closed) {
-        // The last_sent had been closed. Reset the last_sent
-        ctx->last_sent = ctx->streams_list;
-    }
-
-    if (ctx->last_sent = ctx->streams_list) {
+void multiplex_ctx_advance_next_stream(stream_multiplex_ctx *ctx) {
+    if (ctx->next_send == ctx->streams_list) {
         // Linear search through the streams list
         for (stream *ptr = ctx->streams_list->next; ptr != NULL; ptr = ptr->next) {
             if (ptr->inflight_tail != ptr->send_tail) {
                 // The send queue for this stream is non-empty
-                stream_to_send = ptr;
+                ctx->next_send = ptr;
                 break;
             }
         }
     } else {
         // We need to search the list while also looping round to the front once we get to the end
         // We also know that the streams list is non-empty
-        for (stream *ptr = ctx->last_sent->next;ptr != ctx->last_sent;ptr = ptr->next) {
+        for (stream *ptr = ctx->next_send->next;; ptr = ptr->next) {
             if (ptr == NULL) {
-                // We hit the end of the list, to move the the front
+                // We hit the end of the list, so move the the front
                 ptr = ctx->streams_list->next;
             }
 
             if (ptr->inflight_tail != ptr->send_tail) {
                 // The send queue for this stream is non-empty, so we use this one
-                stream_to_send = ptr;
+                ctx->next_send = ptr;
+                break;
+            }
+
+            if (ptr == ctx->next_send) {
+                // We've gone the whole way around without finding a suitable next stream
                 break;
             }
         }
     }
+}
 
-    if (stream_to_send != NULL) {
-        // Update the context ready for next time
-        ctx->last_sent = stream_to_send;
+stream* multiplex_streams(stream_multiplex_ctx *ctx) {
+    if (ctx->next_send->inflight_tail == ctx->next_send->send_tail) {
+        // The next send has an empty send queue, so look for the next stream with a populated send queue. If all are empty, this is a NOP
+        multiplex_ctx_advance_next_stream(ctx);
     }
-
-    return stream_to_send;
+    if (ctx->next_send->inflight_tail == ctx->next_send->send_tail) {
+        // No stream has a populated send queue, so return NULL
+        return NULL;
+    }
+    return ctx->next_send;
 }

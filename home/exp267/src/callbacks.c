@@ -5,7 +5,7 @@
 #include <stdio.h>
 #include <inttypes.h>
 
-int acked_stream_data_offset_cb(ngtcp2_conn *conn, uint64_t offset, uint64_t datalen, stream *stream, int timing) {
+int acked_stream_data_offset_cb(uint64_t offset, uint64_t datalen, stream *stream, int timing) {
     // The remote has acknowledged all data in the range [offset, offset+datalen)
     // Used for calculating inflight time of acknowledged packets, to be reported if timing is on
     uint64_t delta;
@@ -48,7 +48,11 @@ int acked_stream_data_offset_cb(ngtcp2_conn *conn, uint64_t offset, uint64_t dat
     return 0;
 }
 
-int stream_close_cb(stream *stream_n, stream *stream_list) {
+int stream_close_cb(stream *stream_n, stream *stream_list, stream_multiplex_ctx *ctx) {
+    if (ctx != NULL) {
+        update_multiplex_ctx_stream_closing(ctx, stream_n);
+    }
+
     // Deallocate ack/send queue
     for (data_node *node = stream_n->inflight_head->next; node != NULL; node = stream_n->inflight_head->next) {
         stream_n->inflight_head->next = node->next;
@@ -83,7 +87,7 @@ int handshake_completed_cb(uint64_t initial_ts) {
 }
 
 // Callback not used for crypto RNG so safe to delegate to stdlib rand() (not crypto secure)
-void rand_cb(uint8_t* dest, size_t destlen, const ngtcp2_rand_ctx* rand_ctx) {
+void rand_cb(uint8_t* dest, size_t destlen) {
     rand_bytes(dest, destlen);
 }
 

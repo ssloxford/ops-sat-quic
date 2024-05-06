@@ -9,7 +9,7 @@
 // TODO - Make all the error codes negative and macros
 
 // TODO - Warning when truncating significant bits?
-int construct_spp(SPP *spp, const uint8_t *payload, size_t payloadlen, uint8_t *data_field, pkt_type packet_type, seq_flag seq_flags, uint16_t spp_pkt_num, uint8_t udp_pkt_num, uint8_t udp_frag_count, uint8_t udp_frag_num) {
+int construct_spp(SPP *spp, const uint8_t *payload, size_t payloadlen, uint8_t *data_field, pkt_type packet_type, seq_flag seq_flags, uint16_t spp_pkt_num, uint16_t udp_pkt_num, uint8_t udp_frag_count, uint8_t udp_frag_num) {
     if (payloadlen > SPP_MAX_DATA_LEN) {
         // TODO - Limits.h this: It's %ld on x86 and %d on ARM. Or suppress/ignore warning
         fprintf(stderr, "Data of %zu bytes does not fit into max payload field\n", payloadlen);
@@ -21,20 +21,20 @@ int construct_spp(SPP *spp, const uint8_t *payload, size_t payloadlen, uint8_t *
     // Primary header
     spp->primary_header.packet_version_number = 0;
 
-    spp->primary_header.pkt_id.packet_type = 0x01 & packet_type;
+    spp->primary_header.pkt_id.packet_type = 0x01ul & packet_type;
     spp->primary_header.pkt_id.secondary_header_present = 1;
-    spp->primary_header.pkt_id.apid = 0x07ff & SPP_APID;
+    spp->primary_header.pkt_id.apid = 0x07fful & SPP_APID;
 
-    spp->primary_header.pkt_seq_ctrl.sequence_flags = 0x03 & seq_flags;
-    spp->primary_header.pkt_seq_ctrl.sequence_count = 0x3fff & spp_pkt_num;
+    spp->primary_header.pkt_seq_ctrl.sequence_flags = 0x03ul & seq_flags;
+    spp->primary_header.pkt_seq_ctrl.sequence_count = 0x3ffful & spp_pkt_num;
 
     // data length field is one less than the number of data (non-primary header) bytes
     spp->primary_header.packet_data_length = payloadlen + SPP_SEC_HEADER_LEN - 1;
 
     // Secondary header
     spp->secondary_header.udp_packet_num = udp_pkt_num;
-    spp->secondary_header.udp_frag_count = 0x0f & udp_frag_count;
-    spp->secondary_header.udp_frag_num = 0x0f & udp_frag_num;
+    spp->secondary_header.udp_frag_count = 0x0ful & udp_frag_count;
+    spp->secondary_header.udp_frag_num = 0x0ful & udp_frag_num;
     // Checksum is calculated and verified when serialising. Not constructed here
 
     // Payload
@@ -54,30 +54,30 @@ int serialise_spp(uint8_t *buf, size_t buflen, const SPP *spp) {
 
     memset(buf, 0, packet_length);
 
-    buf[0] |= 0xe0 & (spp->primary_header.packet_version_number << 5);
+    buf[0] |= 0xe0ul & (spp->primary_header.packet_version_number << 5);
 
     // Packet ID field
-    buf[0] |= 0x10 & (spp->primary_header.pkt_id.packet_type << 4);
-    buf[0] |= 0x08 & (spp->primary_header.pkt_id.secondary_header_present << 3);
+    buf[0] |= 0x10ul & (spp->primary_header.pkt_id.packet_type << 4);
+    buf[0] |= 0x08ul & (spp->primary_header.pkt_id.secondary_header_present << 3);
     // 3 least significant bits of the 2nd byte (ie bits 10, 9, and 8)
-    buf[0] |= 0x07 & (spp->primary_header.pkt_id.apid >> 8);
-    buf[1] |= 0xff & (spp->primary_header.pkt_id.apid);
+    buf[0] |= 0x07ul & (spp->primary_header.pkt_id.apid >> 8);
+    buf[1] |= 0xfful & (spp->primary_header.pkt_id.apid);
 
     // Packet sequence control field
-    buf[2] |= 0xc0 & (spp->primary_header.pkt_seq_ctrl.sequence_flags << 6);
-    buf[2] |= 0x3f & (spp->primary_header.pkt_seq_ctrl.sequence_count >> 8);
-    buf[3] |= 0xff & (spp->primary_header.pkt_seq_ctrl.sequence_count);
+    buf[2] |= 0xc0ul & (spp->primary_header.pkt_seq_ctrl.sequence_flags << 6);
+    buf[2] |= 0x3ful & (spp->primary_header.pkt_seq_ctrl.sequence_count >> 8);
+    buf[3] |= 0xfful & (spp->primary_header.pkt_seq_ctrl.sequence_count);
 
     // Packet data length field takes 2 full bytes
-    buf[4] |= 0xff & (spp->primary_header.packet_data_length >> 8);
-    buf[5] |= 0xff & (spp->primary_header.packet_data_length);
+    buf[4] |= 0xfful & (spp->primary_header.packet_data_length >> 8);
+    buf[5] |= 0xfful & (spp->primary_header.packet_data_length);
 
-    buf[6] |= 0xff & (spp->secondary_header.udp_packet_num >> 8);
-    buf[7] |= 0xff & (spp->secondary_header.udp_packet_num);
-    buf[8] |= 0xf0 & (spp->secondary_header.udp_frag_count << 4);
-    buf[8] |= 0x0f & (spp->secondary_header.udp_frag_num);
+    buf[6] |= 0xfful & (spp->secondary_header.udp_packet_num >> 8);
+    buf[7] |= 0xfful & (spp->secondary_header.udp_packet_num);
+    buf[8] |= 0xf0ul & (spp->secondary_header.udp_frag_count << 4);
+    buf[8] |= 0x0ful & (spp->secondary_header.udp_frag_num);
 
-    buf[9] |= 0xff & calculate_checksum(buf);
+    buf[9] |= 0xfful & calculate_checksum(buf);
 
     size_t data_field_len = packet_length - SPP_HEADER_LEN;
     memcpy(buf+SPP_HEADER_LEN, spp->user_data, data_field_len);
@@ -124,21 +124,21 @@ int deserialise_spp(const uint8_t *buf, SPP *spp) {
     }
 
     // Primary header
-    spp->primary_header.packet_version_number = 0x07 & (buf[0] >> 5);
+    spp->primary_header.packet_version_number = 0x07ul & (buf[0] >> 5);
     
-    spp->primary_header.pkt_id.packet_type = 0x01 & (buf[0] >> 4);
-    spp->primary_header.pkt_id.secondary_header_present = 0x01 & (buf[0] >> 3);
-    spp->primary_header.pkt_id.apid = 0x07ff & ((buf[0] << 8) | buf[1]);
+    spp->primary_header.pkt_id.packet_type = 0x01ul & (buf[0] >> 4);
+    spp->primary_header.pkt_id.secondary_header_present = 0x01ul & (buf[0] >> 3);
+    spp->primary_header.pkt_id.apid = 0x07fful & ((buf[0] << 8) | buf[1]);
 
-    spp->primary_header.pkt_seq_ctrl.sequence_flags = 0x03 & (buf[2] >> 6);
-    spp->primary_header.pkt_seq_ctrl.sequence_count = 0x3fff & ((buf[2] << 8) | buf[3]);
+    spp->primary_header.pkt_seq_ctrl.sequence_flags = 0x03ul & (buf[2] >> 6);
+    spp->primary_header.pkt_seq_ctrl.sequence_count = 0x3ffful & ((buf[2] << 8) | buf[3]);
 
     spp->primary_header.packet_data_length = get_spp_data_length(buf);
 
     // Secondary header
-    spp->secondary_header.udp_packet_num = 0xffff & ((buf[6] << 8) | buf[7]);
-    spp->secondary_header.udp_frag_count = 0x0f & (buf[8] >> 4);
-    spp->secondary_header.udp_frag_num = 0x0f & buf[8];
+    spp->secondary_header.udp_packet_num = 0xfffful & ((buf[6] << 8) | buf[7]);
+    spp->secondary_header.udp_frag_count = 0x0ful & (buf[8] >> 4);
+    spp->secondary_header.udp_frag_num = 0x0ful & buf[8];
 
     if (spp->secondary_header.udp_frag_num >= spp->secondary_header.udp_frag_count) {
         // This fragment claims to be indexed greater than the number of fragments in this packet. Treat this as corrupt header
@@ -156,7 +156,7 @@ int deserialise_spp(const uint8_t *buf, SPP *spp) {
     return 0;
 }
 
-int fragment_data(SPP **spp, const uint8_t *data, size_t datalen, int *packets_made, uint16_t spp_pkt_count, uint8_t udp_pkt_num) {
+int fragment_data(SPP **spp, const uint8_t *data, size_t datalen, int *packets_made, uint16_t spp_pkt_count, uint16_t udp_pkt_num) {
     int data_written, data_this_packet;
     seq_flag seq_flag;
 
