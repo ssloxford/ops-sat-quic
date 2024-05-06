@@ -108,6 +108,26 @@ int verify_checksum(const uint8_t *header) {
     return calculate_checksum(header) == header[SPP_CHECKSUM_OFFSET];
 }
 
+int header_is_valid(const uint8_t *header) {
+    SPP_primary_header prim;
+    SPP_secondary_header sec;
+
+    if (!verify_checksum(header)) return 0;
+
+    deserialise_spp_header(header, &prim, &sec);
+
+    // SPP spec requires these 3 bits to be clear (ie. the version number is 0)
+    if (prim.packet_version_number != 0) return 0;
+    // For this project, there is always a secondary header present
+    if (prim.pkt_id.secondary_header_present != 1) return 0;
+    // We must drop packets whose SPP_APID don't match, so we can count this as invalid
+    if (prim.pkt_id.apid != SPP_APID) return 0;
+    // If the packet data length is impossible according to the MTU, this is invalid
+    if (prim.packet_data_length > SPP_DATA_LENGTH(SPP_MTU)) return 0;
+
+    return 1;
+}
+
 size_t get_spp_data_length(const uint8_t *buf) {
     uint16_t size = 0;
 
@@ -117,28 +137,32 @@ size_t get_spp_data_length(const uint8_t *buf) {
     return size;
 }
 
+void deserialise_spp_header(const uint8_t *buf, SPP_primary_header *prim, SPP_secondary_header *sec) {
+    // Primary header
+    prim->packet_version_number = 0x07ul & (buf[0] >> 5);
+    
+    prim->pkt_id.packet_type = 0x01ul & (buf[0] >> 4);
+    prim->pkt_id.secondary_header_present = 0x01ul & (buf[0] >> 3);
+    prim->pkt_id.apid = 0x07fful & ((buf[0] << 8) | buf[1]);
+
+    prim->pkt_seq_ctrl.sequence_flags = 0x03ul & (buf[2] >> 6);
+    prim->pkt_seq_ctrl.sequence_count = 0x3ffful & ((buf[2] << 8) | buf[3]);
+
+    prim->packet_data_length = get_spp_data_length(buf);
+
+    // Secondary header
+    sec->udp_packet_num = 0xfffful & ((buf[6] << 8) | buf[7]);
+    sec->udp_frag_count = 0x0ful & (buf[8] >> 4);
+    sec->udp_frag_num = 0x0ful & buf[8];
+}
+
 int deserialise_spp(const uint8_t *buf, SPP *spp) {
     if (!verify_checksum(buf)) {
         // Checksum showed corrupted packet header. Drop packet
         return -1;
     }
 
-    // Primary header
-    spp->primary_header.packet_version_number = 0x07ul & (buf[0] >> 5);
-    
-    spp->primary_header.pkt_id.packet_type = 0x01ul & (buf[0] >> 4);
-    spp->primary_header.pkt_id.secondary_header_present = 0x01ul & (buf[0] >> 3);
-    spp->primary_header.pkt_id.apid = 0x07fful & ((buf[0] << 8) | buf[1]);
-
-    spp->primary_header.pkt_seq_ctrl.sequence_flags = 0x03ul & (buf[2] >> 6);
-    spp->primary_header.pkt_seq_ctrl.sequence_count = 0x3ffful & ((buf[2] << 8) | buf[3]);
-
-    spp->primary_header.packet_data_length = get_spp_data_length(buf);
-
-    // Secondary header
-    spp->secondary_header.udp_packet_num = 0xfffful & ((buf[6] << 8) | buf[7]);
-    spp->secondary_header.udp_frag_count = 0x0ful & (buf[8] >> 4);
-    spp->secondary_header.udp_frag_num = 0x0ful & buf[8];
+    deserialise_spp_header(buf, &spp->primary_header, &spp->secondary_header);
 
     if (spp->secondary_header.udp_frag_num >= spp->secondary_header.udp_frag_count) {
         // This fragment claims to be indexed greater than the number of fragments in this packet. Treat this as corrupt header

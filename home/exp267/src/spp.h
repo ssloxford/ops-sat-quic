@@ -117,6 +117,10 @@ uint8_t calculate_checksum(const uint8_t *header);
 
 size_t get_spp_data_length(const uint8_t *buf);
 
+void deserialise_spp_header(const uint8_t *buf, SPP_primary_header *prim, SPP_secondary_header *sec);
+
+int header_is_valid(const uint8_t *header);
+
 int deserialise_spp(const uint8_t *buf, SPP *spp);
 
 int fragment_data(SPP **spp, const uint8_t *data, size_t datalen, int *packets_made, uint16_t spp_pkt_count, uint16_t udp_pkt_num);
