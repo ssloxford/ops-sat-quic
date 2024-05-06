@@ -484,6 +484,10 @@ static int client_read_step(client *c) {
 
         rv = ngtcp2_pkt_decode_version_cid(&version, buf, pktlen, NGTCP2_MAX_CIDLEN);
         if (rv < 0) {
+            if (rv == NGTCP2_ERR_INVALID_ARGUMENT) {
+                // Couldn't decode the cid. Just drop the packet
+                continue;
+            }
             fprintf(stderr, "Failed to decode version cid: %s\n", ngtcp2_strerror(rv));
             return rv;
         }

@@ -28,6 +28,7 @@ void print_helpstring() {
     printf("-r [range]: Sets the range of delay times. Per section delay is in the range d+-r. Default 0\n");
     printf("-l [chance]: Sets the SPP loss chance. Default 0\n");
     printf("-k [chance]: Sets the SPP corruption chance. Default 0\n");
+    printf("-p [chance]: Sets the SPP payload corruption chance (will not corrupt header). Default 0\n");
     printf("-v: Enables debugging. Can be used multiple times to be more verbose\n");
 }
 
@@ -106,9 +107,9 @@ int main(int argc, char **argv) {
     uint64_t ts;
 
     int delay_mean = 0, delay_range = 0;
-    double loss_chance = 0.0, corruption_chance = 0.0;
+    double loss_chance = 0.0, corruption_chance = 0.0, payload_corruption_chance = 0.0;
 
-    unsigned int corruption_cutoff, loss_cutoff;
+    unsigned int corruption_cutoff, loss_cutoff, payload_corruption_cutoff;
     
     int discard_packet, delay;
 
@@ -119,7 +120,7 @@ int main(int argc, char **argv) {
 
     left_waiting_datas.next = right_waiting_datas.next = NULL;
 
-    while ((opt = getopt(argc, argv, "hs:c:d:l:k:r:v")) != -1) {
+    while ((opt = getopt(argc, argv, "hs:c:d:l:k:r:vp:")) != -1) {
         switch (opt) {
             case 'h':
                 print_helpstring();
@@ -154,6 +155,9 @@ int main(int argc, char **argv) {
                 break;
             case 'k':
                 corruption_chance = atof(optarg);
+                break;
+            case 'p':
+                payload_corruption_chance = atof(optarg);
                 break;
             case 'r':
                 delay_range = atoi(optarg);
@@ -193,10 +197,22 @@ int main(int argc, char **argv) {
     if (corruption_chance < 0) {
         printf("Corruption chance cannot be negative. Setting to 0\n");
         corruption_chance = 0;
+    } else if (corruption_chance > 1) {
+        printf("Corruption chance cannot be greater than 1. Setting to 1\n");
+        corruption_chance = 1;
+    }
+
+    if (payload_corruption_chance < 0) {
+        printf("Payload corruption chance cannot be negative. Setting to 0\n");
+        payload_corruption_chance = 0;
+    } else if (payload_corruption_chance > 1) {
+        printf("Payload corruption chance cannot be greater than 1. Setting to 1\n");
+        payload_corruption_chance = 1;
     }
 
     loss_cutoff = UINT_MAX * loss_chance;
     corruption_cutoff = UINT_MAX * corruption_chance;
+    payload_corruption_cutoff = UINT_MAX * payload_corruption_chance;
 
     // Resolving sockets
     if (left_is_server) {
@@ -354,6 +370,16 @@ int main(int argc, char **argv) {
                     }
                 }
 
+                rand_uint = rand();
+
+                if (rand_uint < payload_corruption_cutoff) {
+                    if (debug >= 1) printf("Corrupting right bount SPP payload\n");
+                    for (int offset = SPP_HEADER_LEN; offset < (rv + SPP_HEADER_LEN); offset += 1) {
+                        rand_bytes(&rand_byte, 1);
+                        buf[offset] ^= rand_byte;
+                    }
+                }
+
                 delay = delay_mean + (rand() % 2*delay_range) - delay_range;
 
                 pkt_ptr = make_node(buf, rv+SPP_HEADER_LEN, delay);
@@ -394,6 +420,16 @@ int main(int argc, char **argv) {
                     for (int offset = 0; offset < (rv+SPP_HEADER_LEN); offset += 1) {
                         rand_bytes(&rand_byte, 1);
                         // Corrupt this byte
+                        buf[offset] ^= rand_byte;
+                    }
+                }
+
+                rand_uint = rand();
+
+                if (rand_uint < payload_corruption_cutoff) {
+                    if (debug >= 1) printf("Corrupting left bount SPP payload\n");
+                    for (int offset = SPP_HEADER_LEN; offset < (rv + SPP_HEADER_LEN); offset += 1) {
+                        rand_bytes(&rand_byte, 1);
                         buf[offset] ^= rand_byte;
                     }
                 }
