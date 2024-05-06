@@ -30,7 +30,7 @@ uint64_t timestamp(void) {
 }
 
 uint64_t timestamp_ms() {
-    return timestamp() / NGTCP2_MILLISECONDS;
+    return (timestamp() / NGTCP2_MILLISECONDS);
 }
 
 // Seeds the RNG

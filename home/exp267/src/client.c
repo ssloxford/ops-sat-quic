@@ -444,7 +444,7 @@ static int client_generate_data(client *c) {
 }
 
 static int client_write_step(client *c) {
-    if (c->settings->debug >= 1) printf("Starting write step\n");
+    if (c->settings->debug >= 2) printf("Starting write step\n");
 
     return write_step(c->conn, c->fd, c->multiplex_ctx, (struct sockaddr*) &c->remotesock, c->remotelen, c->settings->debug);
 }
@@ -460,7 +460,7 @@ static int client_read_step(client *c) {
 
     ssize_t pktlen;
 
-    if (c->settings->debug >= 1) printf("Starting read step\n");
+    if (c->settings->debug >= 2) printf("Starting read step\n");
 
     for (;;) {
         pktlen = read_message(c->fd, buf, sizeof(buf), (struct sockaddr*) &remote_addr, &remote_addrlen);

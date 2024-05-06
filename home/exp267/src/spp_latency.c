@@ -9,6 +9,7 @@
 #include <limits.h>
 
 #include "utils.h"
+#include "spp.h"
 
 typedef struct _waiting_data {
     uint8_t *data;
@@ -38,7 +39,7 @@ waiting_data* make_node(const uint8_t *data, size_t datalen, int delay) {
         return NULL;
     }
 
-    uint8_t *node_data = malloc(datalen);
+    uint8_t *node_data = malloc(SPP_MTU);
 
     if (node_data == NULL) {
         free(node);
@@ -53,7 +54,7 @@ waiting_data* make_node(const uint8_t *data, size_t datalen, int delay) {
     node->next = NULL;
 
     // Time recieved
-    node->send_time = timestamp() + (1000000ull * delay);
+    node->send_time = timestamp_ms() + delay;
 
     return node;
 }
@@ -94,15 +95,15 @@ int main(int argc, char **argv) {
     char *left_port, *right_port;
     int left_port_set = 0, right_port_set = 0;
 
-    uint8_t *buf;
+    uint8_t buf[BUF_SIZE];
     waiting_data *pkt_ptr;
 
     struct pollfd polls[2];
     int left_timeout, right_timeout, timeout;
+    uint64_t ts;
 
     int delay_mean = 0, delay_range = 0;
-    double loss_chance = 0;
-    double corruption_chance = 0;
+    double loss_chance = 0.0, corruption_chance = 0.0;
 
     unsigned int corruption_cutoff, loss_cutoff;
     
@@ -222,11 +223,13 @@ int main(int argc, char **argv) {
     polls[0].events = polls[1].events = POLLIN;
 
     for (;;) {
+        ts = timestamp_ms();
+
         // Calculate the timeout for the packets waiting to be sent left
         if (left_waiting_datas.next == NULL) {
             left_timeout = -1;
         } else {
-            left_timeout = (left_waiting_datas.next->send_time - timestamp()) / 1000000ull;
+            left_timeout = left_waiting_datas.next->send_time - ts;
             if (left_timeout < 0) left_timeout = 0;
         }
 
@@ -234,7 +237,7 @@ int main(int argc, char **argv) {
         if (right_waiting_datas.next == NULL) {
             right_timeout = -1;
         } else {
-            right_timeout = (right_waiting_datas.next->send_time - timestamp()) / 1000000ull;
+            right_timeout = right_waiting_datas.next->send_time - ts;
             if (right_timeout < 0) right_timeout = 0;
         }
 
@@ -257,10 +260,12 @@ int main(int argc, char **argv) {
 
         if (rv == 0) {
             // Poll continued due to timeout
+            ts = timestamp_ms();
+
             // Process right packets
             for (pkt_ptr = right_waiting_datas.next; pkt_ptr != NULL; pkt_ptr = right_waiting_datas.next) {
                 // Packets are arranged in ascending order. If this one is still waiting, we can break.
-                if (pkt_ptr->send_time > timestamp()) break;
+                if (pkt_ptr->send_time > ts) break;
 
                 rv = send(right_fd, pkt_ptr->data, pkt_ptr->datalen, 0);
 
@@ -278,7 +283,7 @@ int main(int argc, char **argv) {
 
             // Exactly as above, but with the left queue
             for (pkt_ptr = left_waiting_datas.next; pkt_ptr != NULL; pkt_ptr = left_waiting_datas.next) {
-                if (pkt_ptr->send_time > timestamp()) break;
+                if (pkt_ptr->send_time > ts) break;
                 
                 rv = send(left_fd, pkt_ptr->data, pkt_ptr->datalen, 0);
                 
@@ -294,19 +299,15 @@ int main(int argc, char **argv) {
 
             // All pending packets have been processed. Return to the poll call
         } else {
-            // We must have recieved a chunk
-            // RNG to determine if we need to drop this chunk
+            // We must have recieved TCP data
+            // RNG to determine if we need to drop this SPP
             rand_uint = rand();
 
             if (rand_uint < loss_cutoff) {
-                printf("Dropping chunk\n");
                 discard_packet = 1;
             } else {
                 discard_packet = 0;
             }
-
-            // Even if dropping the packet, we need the buffer to read into to take it out of the socket buffer
-            buf = malloc(MAX_UDP_PAYLOAD);
 
             if (buf == NULL) {
                 fprintf(stderr, "Out of memory\n");
@@ -316,7 +317,7 @@ int main(int argc, char **argv) {
             if (polls[0].revents & POLLIN) {
                 // Recieved message to the left side
 
-                rv = recv(left_fd, buf, MAX_UDP_PAYLOAD, 0);
+                rv = recv(left_fd, buf, SPP_HEADER_LEN, MSG_WAITALL);
 
                 if (rv == -1) {
                     fprintf(stderr, "Error when left receiving message: %s\n", strerror(errno));
@@ -328,17 +329,19 @@ int main(int argc, char **argv) {
                     return 0;
                 }
 
+                rv = recv(left_fd, buf+SPP_HEADER_LEN, get_spp_data_length(buf) + 1 - SPP_SEC_HEADER_LEN, MSG_WAITALL);
+
                 // If dropping this packet, free the buffer it's been read into and return to the top of the loop
                 if (discard_packet) {
-                    free(buf);
+                    printf("Dropping right bound SPP\n");
                     continue;
                 }
 
                 rand_uint = rand();
 
                 if (rand_uint < corruption_cutoff) {
-                    printf("Corrupting right bound chunk of length %d\n", rv);
-                    for (int offset = 0; offset < rv; offset += 0x0f & rand_byte) {
+                    printf("Corrupting right bound SPP\n");
+                    for (int offset = 0; offset < (rv+SPP_HEADER_LEN); offset += 0x0f & rand_byte) {
                         rand_bytes(&rand_byte, 1);
                         // Corrupt this byte
                         buf[offset] ^= rand_byte;
@@ -347,7 +350,7 @@ int main(int argc, char **argv) {
 
                 delay = delay_mean + (rand() % 2*delay_range) - delay_range;
 
-                pkt_ptr = make_node(buf, rv, delay);
+                pkt_ptr = make_node(buf, rv+SPP_HEADER_LEN, delay);
 
                 if (pkt_ptr == NULL) {
                     // Out of memory
@@ -357,8 +360,8 @@ int main(int argc, char **argv) {
                 enqueue_node(&right_waiting_datas, pkt_ptr);
             } else if (polls[1].revents & POLLIN) {
                 // Recieved a message to the right side
-                
-                rv = recv(right_fd, buf, MAX_UDP_PAYLOAD, 0);
+
+                rv = recv(right_fd, buf, SPP_HEADER_LEN, MSG_WAITALL);
 
                 if (rv == -1) {
                     fprintf(stderr, "Error when right receiving message: %s\n", strerror(errno));
@@ -370,16 +373,19 @@ int main(int argc, char **argv) {
                     return 0;
                 }
 
+                rv = recv(right_fd, buf+SPP_HEADER_LEN, get_spp_data_length(buf) + 1 - SPP_SEC_HEADER_LEN, MSG_WAITALL);
+
+                // If dropping this packet, free the buffer it's been read into and return to the top of the loop
                 if (discard_packet) {
-                    free(buf);
+                    printf("Dropping left bound SPP\n");
                     continue;
                 }
 
                 rand_uint = rand();
 
                 if (rand_uint < corruption_cutoff) {
-                    printf("Corrupting left bound chunk of length %d\n", rv);
-                    for (int offset = 0; offset < rv; offset += 0x0f & rand_byte) {
+                    printf("Corrupting left bound SPP\n");
+                    for (int offset = 0; offset < (rv+SPP_HEADER_LEN); offset += 0x0f & rand_byte) {
                         rand_bytes(&rand_byte, 1);
                         // Corrupt this byte
                         buf[offset] ^= rand_byte;
@@ -388,9 +394,10 @@ int main(int argc, char **argv) {
 
                 delay = delay_mean + (rand() % 2*delay_range) - delay_range;
 
-                pkt_ptr = make_node(buf, rv, delay);
+                pkt_ptr = make_node(buf, rv + SPP_HEADER_LEN, delay);
 
                 if (pkt_ptr == NULL) {
+                    // Out of memory
                     return -1;
                 }
 

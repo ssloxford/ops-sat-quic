@@ -17,8 +17,8 @@
 
 #define TCP_DEFAULT_PORT "4096"
 #define UDP_DEFAULT_PORT "11120"
-// Destroy the packet if it's incomplete and no new fragment has been recieved in the last 15 seconds
-#define TIMEOUT_MS (15 * 1000)
+// Destroy the packet if it's incomplete and no new fragment has been recieved in the last 10 seconds
+#define TIMEOUT_MS (2 * 1000)
 
 typedef struct _incomplete_packet {
     uint16_t packet_number;
@@ -97,7 +97,7 @@ static int handle_spp(int udp_fd, const uint8_t *buf, incomplete_packet *incomp_
     SPP spp;
     uint8_t spp_payload[SPP_MAX_DATA_LEN];
 
-    int node_udp_pkt_num, searching_udp_pkt_num;
+    uint16_t node_udp_pkt_num, searching_udp_pkt_num;
 
     incomplete_packet *prev_ptr, *pkt_ptr, *found_pkt;
 
@@ -107,20 +107,24 @@ static int handle_spp(int udp_fd, const uint8_t *buf, incomplete_packet *incomp_
 
     if (rv == -1) {
         // Packet had a corrupted header. Drop the packet
+        if (debug >= 1) printf("Packet had corrupted header, dropping packet\n");
         return -1;
     }
 
     if (spp.primary_header.pkt_id.apid != SPP_APID) {
         // Packet not intended for me
+        if (debug >= 1) printf("Packet application ID did not match, dropping packet\n");
         return -1;
     }
+
+    if (debug >= 4) printf("Received SPP for UDP packet %"PRIu16"\n", spp.secondary_header.udp_packet_num);
 
     // UDP packet number we're searching for in the linked list of incomplete packets
     searching_udp_pkt_num = spp.secondary_header.udp_packet_num;
 
     prev_ptr = incomp_pkts;
 
-    // Search the incomplete packets list for this UDP packet number
+    // Search the incomplete packets list for this UDP packet number. List is sorted by UDP packet number
     for (pkt_ptr = prev_ptr->next;;pkt_ptr = prev_ptr->next) {
         if (pkt_ptr == NULL) {
             // At the end of the list. Insert new node on the end
@@ -135,6 +139,8 @@ static int handle_spp(int udp_fd, const uint8_t *buf, incomplete_packet *incomp_
             // This packet has expired. Destroy it
             // It may be that this packet number matches the one we've received, but it should still be destroyed for correctness of the timeout
             prev_ptr->next = pkt_ptr->next;
+
+            if (debug >= 1) printf("Packet timeout reached. Dropping partial packet with UDP packet number %d\n", pkt_ptr->packet_number);
 
             // Deallocate this node
             free(pkt_ptr->partial_payload);
@@ -166,7 +172,7 @@ static int handle_spp(int udp_fd, const uint8_t *buf, incomplete_packet *incomp_
     if (found_pkt->frag_count == found_pkt->frags_recieved) {
         // Packet is complete. Ready to be transmitted over UDP
 
-        if (debug) printf("SPP bridge: Sending completed UDP packet\n");
+        if (debug >= 2) printf("SPP bridge: Sending completed UDP packet\n");
 
         rv = sendto(udp_fd, found_pkt->partial_payload, found_pkt->packet_length, 0, udp_addr, addrlen);
 
@@ -216,7 +222,7 @@ static int handle_udp_packet(int tcp_fd, uint8_t *buf, size_t buflen, size_t pkt
 
         bytes_to_send = SPP_TOTAL_LENGTH(packets[i].primary_header.packet_data_length);
 
-        if (debug) printf("Sending SPP of length %zu\n", bytes_to_send);
+        if (debug >= 2) printf("Sending SPP of length %zu\n", bytes_to_send);
 
         // Potentially blocking call if remote not able to recieve data
         rv = sendto(tcp_fd, buf, bytes_to_send, 0, remote_addr, remote_addrlen);
@@ -308,7 +314,7 @@ int main(int argc, char **argv) {
                 udp_client = 1;
                 break;
             case 'd':
-                debug = 1;
+                debug += 1;
                 break;
             case '?':
                 printf("SPP bridge: Unknown option -%c\n", optopt);
@@ -336,7 +342,7 @@ int main(int argc, char **argv) {
         return rv;
     }
     
-    if (debug) printf("SPP bridge: Processing TCP port %s as %s\n", tcp_target_port, tcp_client ? "client" : "server");
+    if (debug >= 1) printf("SPP bridge: Processing TCP port %s as %s\n", tcp_target_port, tcp_client ? "client" : "server");
 
     // Init the TCP connection
     if (tcp_client) {
@@ -353,14 +359,14 @@ int main(int argc, char **argv) {
         return rv;
     }
 
-    if (debug) printf("SPP bridge: Successfully established connections\n");
+    if (debug >= 1) printf("SPP bridge: Successfully established connections\n");
 
     polls[0].fd = udp_fd;
     polls[1].fd = tcp_fd;
 
     polls[0].events = polls[1].events = POLLIN;
 
-    if (debug) printf("Intialisation took %"PRIu64"ms\n", timestamp_ms() - ts);
+    if (debug >= 3) printf("Intialisation took %"PRIu64"ms\n", timestamp_ms() - ts);
 
     for (;;) {
         if (udp_remote_set) {
@@ -373,7 +379,7 @@ int main(int argc, char **argv) {
         }
 
         if (polls[0].revents & POLLIN) {
-            if (debug) printf("SPP bridge: UDP message recieved\n");
+            if (debug >= 2) printf("SPP bridge: UDP message recieved\n");
 
             // If dealing with a new client, will update address. Lets bridge persist across clients
             rv = recvfrom(udp_fd, buf, sizeof(buf), 0, (struct sockaddr*) &udp_remote, &udp_remotelen);
@@ -396,10 +402,11 @@ int main(int argc, char **argv) {
             // UDP packet recieved
             handle_udp_packet(tcp_fd, buf, sizeof(buf), rv, spp_count, udp_count, &packets_sent, (struct sockaddr*) &tcp_remote, tcp_remotelen, debug);
             udp_count++;
+            if (udp_count == 0) printf("WARNING: UDP count overflowed\n");
             spp_count += packets_sent;
             if (spp_count >= SPP_SEQ_COUNT_MODULO) spp_count -= SPP_SEQ_COUNT_MODULO;
         } else if (polls[1].revents & POLLIN) {
-            if (debug) printf("SPP bridge: TCP message recieved\n");
+            if (debug >= 2) printf("SPP bridge: TCP message recieved\n");
 
             // Wait to be able to read a full header
             rv = recv(tcp_fd, buf, SPP_HEADER_LEN, MSG_WAITALL);
@@ -437,7 +444,7 @@ int main(int argc, char **argv) {
             // Wait to recieve the body of the SPP, then process it
             rv = recv(tcp_fd, buf+SPP_HEADER_LEN, spp_data_length, MSG_WAITALL);
 
-            if (debug) printf("SPP bridge: Packet of length %zu in total successfully read\n", spp_data_length+SPP_HEADER_LEN);
+            if (debug >= 2) printf("SPP bridge: Packet of length %zu in total successfully read\n", spp_data_length+SPP_HEADER_LEN);
 
             if (rv == 0) {
                 printf("SPP bridge: Remote shutdown TCP connection\n");
@@ -451,16 +458,23 @@ int main(int argc, char **argv) {
             // TCP packet recieved
             rv = handle_spp(udp_fd, buf, &incomp_pkts, (struct sockaddr*) &udp_remote, udp_remotelen, debug);
 
-            if (debug >= 2) printf("Handling SPP took %"PRIu64"ms\n", timestamp_ms() - ts);
+            if (debug >= 3) printf("Handling SPP took %"PRIu64"ms\n", timestamp_ms() - ts);
 
             if (rv < 0) {
                 if (rv == ERROR_SOCKET) {
                     // If the remote is a server that's terminated, also terminate
-                    if (udp_client) return -1;
+                    if (udp_client) {
+                        rv = -1;
+                        deinit(udp_fd, tcp_fd);
+                        return -1;
+                    }
                     // Otherwise, wait for the next connection to the local UDP server
                     udp_remote_set = 0;
                 }
-                break;
+                if (rv == -1) {
+                    // Packet was dropped because it's not for me or was corrupted
+                    continue;
+                }
             }
         }
     }

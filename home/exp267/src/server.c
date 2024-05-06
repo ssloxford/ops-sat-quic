@@ -496,17 +496,21 @@ static int server_accept_connection(server *s, uint8_t *buf, size_t buflen, ngtc
 
     int rv;
 
-    if (s->connected) {
-        //TODO - Error message, error code
-        return -1;
-    }
-
     // Determine if the received first message is acceptable
     // If it is, write the data into the header structure
     rv = ngtcp2_accept(&header, buf, buflen);
     if (rv < 0) {
+        if (rv == NGTCP2_ERR_INVALID_ARGUMENT) {
+            // Just drop this packet
+            return -1;
+        }
         fprintf(stderr, "First packet could not be parsed or was unacceptable: %s\n", ngtcp2_strerror(rv));
         return rv;
+    }
+
+    if (s->connected) {
+        // Assume that a close_connection frame was lost. Allow the new connection to userp this one
+        server_drop_connection(s);
     }
 
     // First packet is acceptable, so create the ngtcp2_conn
@@ -577,7 +581,7 @@ static int server_read_step(server *s) {
 
     ssize_t pktlen;
 
-    if (s->settings->debug >= 1) printf("Starting read step\n");
+    if (s->settings->debug >= 2) printf("Starting read step\n");
 
     for (;;) {
         pktlen = read_message(s->fd, buf, sizeof(buf), (struct sockaddr*) &s->remotesock, &s->remotelen);
@@ -597,6 +601,24 @@ static int server_read_step(server *s) {
         // 8 is assumed length of the CID when decoding short headers. This doesn't affect long headers
         rv = ngtcp2_pkt_decode_version_cid(&version, buf, pktlen, 8);
         if (rv < 0) {
+            if (rv == NGTCP2_ERR_VERSION_NEGOTIATION) {
+                // Only support QUICv1
+                if (s->settings->debug >= 1) printf("Received a version negotiation packet. Header requested version %"PRIu32"\n", version.version);
+                uint32_t supported_version = NGTCP2_PROTO_VER_V1;
+                pktlen = ngtcp2_pkt_write_version_negotiation(buf, sizeof(buf), (uint8_t) rand(), version.scid, version.scidlen, version.dcid, version.dcidlen, &supported_version, 1);
+
+                rv = send_packet(s->fd, buf, pktlen, (struct sockaddr*) &s->remotesock, s->remotelen);
+
+                if (rv < 0) {
+                    return rv;
+                }
+
+                return 0;
+            } else if (rv == NGTCP2_ERR_INVALID_ARGUMENT) {
+                // Couldn't decode the packet header. Drop the packet
+                continue;
+            }
+
             fprintf(stderr, "Could not decode packet version: %s\n", ngtcp2_strerror(rv));
             return rv;
         }
@@ -633,13 +655,10 @@ static int server_read_step(server *s) {
 
         // If we're not currently connected, try accepting the connection. If it works, action the packet
         if (!found) {
-            if (s->connected) {
-                // Assume that a close_connection frame was lost. Allow the new connection to userp this one
-                server_drop_connection(s);
-            }
             rv = server_accept_connection(s, buf, sizeof(buf), &path);
             if (rv < 0) {
-                return rv;
+                // The accept connection failed. Just drop the packet and continue
+                continue;
             }
         }
 
@@ -693,7 +712,12 @@ static int server_read_step(server *s) {
 }
 
 static int server_write_step(server *s) {
-    if (s->settings->debug >= 1) printf("Starting write step\n");
+    if (s->settings->debug >= 2) printf("Starting write step\n");
+
+    if (ngtcp2_conn_in_draining_period(s->conn)) {
+        if (s->settings->debug >= 1) printf("Server is in draining state\n");
+        return 0;
+    }
 
     return write_step(s->conn, s->fd, s->multiplex_ctx, (struct sockaddr*) &s->remotesock, s->remotelen, s->settings->debug);
 }
