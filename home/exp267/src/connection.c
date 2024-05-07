@@ -153,8 +153,9 @@ ssize_t write_step(ngtcp2_conn *conn, int fd, stream_multiplex_ctx *multi_ctx, s
 
             // Split the part sent packet and add the unsent section to the queue after the sent section. We can then advance the tail pointer as normal
             insert_message(pkt_to_send->payload + stream_framelen, pkt_to_send->payloadlen - stream_framelen, pkt_to_send->fin_bit, pkt_to_send->stream_id, pkt_to_send->offset + stream_framelen, pkt_to_send);
-            // Updating this isn't strictly necessary, but the fin bit in the sent packet was clear so it's nice to reflect that in the send queue
+            // Updating this isn't strictly necessary since it's only read when the packet is sent, but it reflects what was actually sent
             pkt_to_send->fin_bit = 0;
+            pkt_to_send->payloadlen = stream_framelen;
         }
 
 
