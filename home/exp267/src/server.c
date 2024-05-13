@@ -462,6 +462,11 @@ static int server_drop_connection(server *s) {
 
     s->connected = 0;
 
+    if (s->settings->timing >= 1) {
+        // Report total uptime of the connection
+        printf("Total connection uptime: %"PRIu64"\n", timestamp_ms() - s->initial_ts);
+    }
+
     // The loop repeatedly pops streams from the front of the list until they're all deleted
     for (stream *stream = s->streams->next; stream != NULL; stream = s->streams->next) {
         // Deallocate the memory associated with this stream and remove it from the list
@@ -514,6 +519,7 @@ static int server_accept_connection(server *s, uint8_t *buf, size_t buflen, ngtc
 
     if (s->connected) {
         // Assume that a close_connection frame was lost. Allow the new connection to userp this one
+        if (s->settings->debug >= 1) printf("New connection replacing previous\n");
         server_drop_connection(s);
     }
 
@@ -672,19 +678,18 @@ static int server_read_step(server *s) {
         if (rv < 0) {
             if (rv == NGTCP2_ERR_DRAINING) {
                 // Client has closed it's connection
+                if (s->settings->debug >= 1) printf("Connection close received, closing\n");
                 server_drop_connection(s);
                 return ERROR_DRAINING_STATE;
-            }
-            fprintf(stderr, "Failed to read packet: %s\n", ngtcp2_strerror(rv));
-
-            if (rv == NGTCP2_ERR_CRYPTO) {
+            } else if (rv == NGTCP2_ERR_CRYPTO) {
                 fprintf(stderr, "TLS alert: %d\n", ngtcp2_conn_get_tls_alert(s->conn));
-            }
-            if (rv == NGTCP2_ERR_DROP_CONN) {
+            } else if (rv == NGTCP2_ERR_DROP_CONN) {
                 // Need to drop the connection silently
+                if (s->settings->debug >= 1) printf("Silently dropping connection\n");
                 server_drop_connection(s);
                 return 0;
             }
+            fprintf(stderr, "Failed to read packet: %s\n", ngtcp2_strerror(rv));
             return rv; 
         }
 
@@ -843,6 +848,7 @@ int main(int argc, char **argv) {
         if (rv == 0) {
             rv = handle_timeout(s.conn, s.fd, (struct sockaddr*) &s.remotesock, s.remotelen, s.settings->debug);
             if (rv == ERROR_DROP_CONNECTION) {
+                if (s.settings->debug >= 1) printf("Idle timeout. Dropping connection\n");
                 server_drop_connection(&s);
                 continue;
             }
