@@ -10,6 +10,10 @@
 
 void rand_init();
 
+uint64_t get_rand_u64();
+
+uint8_t get_rand_byte();
+
 int rand_bytes(uint8_t* dest, size_t destlen);
 
 uint64_t timestamp(void);

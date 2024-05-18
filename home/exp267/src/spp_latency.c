@@ -7,6 +7,8 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <limits.h>
+#include <getopt.h>
+#include <math.h>
 
 #include "utils.h"
 #include "spp.h"
@@ -20,15 +22,28 @@ typedef struct _waiting_data {
     struct _waiting_data *next;
 } waiting_data;
 
+static double get_rand_gaussian(double mean, double sd) {
+    // Calculate a gaussian using the Box-Muller transform
+    // Two uniform variables in the range [0, 1]
+    double x = (double)get_rand_u64()/(double)(UINT64_MAX);
+    double y = (double)get_rand_u64()/(double)(UINT64_MAX);
+
+    // Calculate a standardised Gaussian, and transform
+    return sd * sqrt(-2.0*log(x)) * cos(2.0*M_PI*y) + mean;
+}
+
 void print_helpstring() {
-    printf("-h: Prints help string\n");
-    printf("-s [port]: Opens a server end listening on the specified port\n");
-    printf("-c [port]: Opens a client end connected to the specified port\n");
-    printf("-d [ms]: Sets the delay applied to data in ms. Default 0\n");
-    printf("-r [range]: Sets the range of delay times. Per section delay is in the range d+-r. Default 0\n");
-    printf("-l [chance]: Sets the SPP loss chance. Default 0\n");
-    printf("-k [chance]: Sets the SPP corruption chance. Default 0\n");
-    printf("-p [chance]: Sets the SPP payload corruption chance (will not corrupt header). Default 0\n");
+    printf("--help, -h: Prints help string\n");
+    printf("--server, -s [port]: Opens a server end listening on the specified port\n");
+    printf("--client, -c [port]: Opens a client end connected to the specified port\n");
+    printf("--delay, -d [ms]: Sets the delay applied to data in ms. Default 0\n");
+    printf("--delay-sd [std. dev.]: Sets the standard deviation for the delay. Default 0\n");
+    printf("--dc [ms]: Sets the mean time between disconnections. Default 0 (no disconnections)\n");
+    printf("--dc-sd [ms]: Sets the standard deviation for the disconnection time. Default 0\n");
+    printf("--rc [ms]: Sets the mean time before reconnecting. Default 0 (immediate reconnection)\n");
+    printf("--rc-sd [ms]: Sets the standard deviation for the reconnection time. Default 0\n");
+    printf("--loss, -l [chance]: Sets the SPP loss chance. Default 0\n");
+    printf("--ber, -e [chance]: Sets the bit error rate. Default 0. Allows exponential notation eg. 1e-9\n");
     printf("-v: Enables debugging. Can be used multiple times to be more verbose\n");
 }
 
@@ -88,11 +103,11 @@ int main(int argc, char **argv) {
     signed char opt;
     int rv;
 
-    unsigned int rand_uint;
+    uint64_t rand_uint;
     uint8_t rand_byte;
 
     int left_is_server, right_is_server;
-    int left_fd, right_fd;
+    int left_fd, right_fd, left_listen_fd, right_listen_fd;
 
     char *left_port, *right_port;
     int left_port_set = 0, right_port_set = 0;
@@ -100,18 +115,24 @@ int main(int argc, char **argv) {
     int debug = 0;
 
     uint8_t buf[BUF_SIZE];
+    uint8_t bit_error_mask[SPP_MTU];
     waiting_data *pkt_ptr;
 
     struct pollfd polls[2];
     int left_timeout, right_timeout, timeout;
     uint64_t ts;
 
-    int delay_mean = 0, delay_range = 0;
-    double loss_chance = 0.0, corruption_chance = 0.0, payload_corruption_chance = 0.0;
+    int delay_mean = 0, delay_sd = 0;
+    int discon_mean = 0, discon_sd = 0;
+    int recon_mean = 0, recon_sd = 0;
+    double loss_chance = 0.0, bit_error_rate = 0.0;
 
-    unsigned int corruption_cutoff, loss_cutoff, payload_corruption_cutoff;
+    // UINT64_MAX indicates the ts for the disconnection is not set
+    uint64_t disconnection_timeout = UINT64_MAX;
+
+    uint64_t loss_cutoff, bit_error_cutoff;
     
-    int discard_packet, delay;
+    int discard_packet, delay, disconnected = 0;
 
     rand_init();
 
@@ -120,7 +141,27 @@ int main(int argc, char **argv) {
 
     left_waiting_datas.next = right_waiting_datas.next = NULL;
 
-    while ((opt = getopt(argc, argv, "hs:c:d:l:k:r:vp:")) != -1) {
+    // getopt_long needs to be able which longopt we've got
+    int longindex;
+
+    struct option long_opts[] = {
+        {"help", no_argument, NULL, 'h'},
+        {"client", required_argument, NULL, 'c'},
+        {"server", required_argument, NULL, 's'},
+        {"delay", required_argument, NULL, 'd'},
+        {"delay-sd", required_argument, NULL, 0},
+        {"dc", required_argument, NULL, 0},
+        {"dc-sd", required_argument, NULL, 0},
+        {"rc", required_argument, NULL, 0},
+        {"rc-sd", required_argument, NULL, 0},
+        {"loss", required_argument, NULL, 'l'},
+        {"ber", required_argument, NULL, 'e'},
+        {"debug", no_argument, NULL, 'v'},
+        {NULL, 0, NULL, 0} // Docs says that the last index must be all zeros
+    };
+
+    // TOOD - Implement intermittent disconnections distributed Gaussian
+    while ((opt = getopt_long(argc, argv, "hs:c:d:l:e:v", long_opts, &longindex)) != -1) {
         switch (opt) {
             case 'h':
                 print_helpstring();
@@ -153,18 +194,36 @@ int main(int argc, char **argv) {
             case 'l':
                 loss_chance = atof(optarg);
                 break;
-            case 'k':
-                corruption_chance = atof(optarg);
-                break;
-            case 'p':
-                payload_corruption_chance = atof(optarg);
-                break;
-            case 'r':
-                delay_range = atoi(optarg);
+            case 'e':
+                bit_error_rate = atof(optarg);
                 break;
             case 'v':
                 debug += 1;
                 break;
+            case 0:
+                // We've got a long-opt. All other long-opts are redirected to equivalent short options
+                switch (longindex) {
+                    case 4:
+                        // --delay-sd
+                        delay_sd = atoi(optarg);
+                        break;
+                    case 5:
+                        // --dc
+                        discon_mean = atoi(optarg);
+                        break;
+                    case 6:
+                        // --dc-sd
+                        discon_sd = atoi(optarg);
+                        break;
+                    case 7:
+                        // --rc
+                        recon_mean = atoi(optarg);
+                        break;
+                    case 8:
+                        // --rc-sd
+                        recon_sd = atoi(optarg);
+                        break;
+                }
             case '?':
                 printf("Unknown option -%c\n", optopt);
                 break;
@@ -178,12 +237,30 @@ int main(int argc, char **argv) {
     }
 
     if (delay_mean < 0) {
-        printf("Delay cannot be negative. Setting to 0\n");
+        printf("Delay mean cannot be negative. Setting to 0\n");
         delay_mean = 0;
     }
 
-    if (delay_range < 0) {
-        delay_range = -delay_range;
+    if (delay_sd < 0) {
+        delay_sd = -delay_sd;
+    }
+
+    if (discon_mean < 0) {
+        printf("Disconnection interval mean cannot be negative. Disabling disconnections\n");
+        discon_mean = 0;
+    }
+
+    if (discon_sd < 0) {
+        discon_sd = -discon_sd;
+    }
+
+    if (recon_mean < 0) {
+        printf("Reconnection interval mean cannot be negative. Setting immediate reconnection\n");
+        recon_mean = 0;
+    }
+
+    if (recon_sd < 0) {
+        recon_sd = -recon_sd;
     }
 
     if (loss_chance < 0) {
@@ -194,29 +271,20 @@ int main(int argc, char **argv) {
         loss_chance = 1;
     }
 
-    if (corruption_chance < 0) {
-        printf("Corruption chance cannot be negative. Setting to 0\n");
-        corruption_chance = 0;
-    } else if (corruption_chance > 1) {
-        printf("Corruption chance cannot be greater than 1. Setting to 1\n");
-        corruption_chance = 1;
+    if (bit_error_rate < 0) {
+        printf("Bit error rate cannot be negative. Setting to 0\n");
+        bit_error_rate = 0;
+    } else if (bit_error_rate > 1) {
+        printf("Bit error rate cannot be greater than 1. Setting to 1\n");
+        bit_error_rate = 1;
     }
 
-    if (payload_corruption_chance < 0) {
-        printf("Payload corruption chance cannot be negative. Setting to 0\n");
-        payload_corruption_chance = 0;
-    } else if (payload_corruption_chance > 1) {
-        printf("Payload corruption chance cannot be greater than 1. Setting to 1\n");
-        payload_corruption_chance = 1;
-    }
-
-    loss_cutoff = UINT_MAX * loss_chance;
-    corruption_cutoff = UINT_MAX * corruption_chance;
-    payload_corruption_cutoff = UINT_MAX * payload_corruption_chance;
+    loss_cutoff = UINT64_MAX * loss_chance;
+    bit_error_cutoff = UINT64_MAX * bit_error_rate;
 
     // Resolving sockets
     if (left_is_server) {
-        rv = bind_and_accept_tcp_socket(&left_fd, left_port, NULL, NULL);
+        rv = bind_tcp_socket(&left_listen_fd, left_port);
     } else {
         rv = connect_tcp_socket(&left_fd, "127.0.0.1", left_port, NULL, NULL);
     }
@@ -228,13 +296,33 @@ int main(int argc, char **argv) {
 
 
     if (right_is_server) {
-        rv = bind_and_accept_tcp_socket(&right_fd, right_port, NULL, NULL);
+        rv = bind_tcp_socket(&right_listen_fd, right_port);
     } else {
         rv = connect_tcp_socket(&right_fd, "127.0.0.1", right_port, NULL, NULL);
     }
 
     if (rv < 0) {
         fprintf(stderr, "Failed to process port %s\n", right_port);
+        return rv;
+    }
+
+    // Bind both first, then accept. Makes sure that the ports are open as soon as possible so no connection refused
+    if (left_is_server) {
+        // The left_fd is currently set to the listen 
+        rv = accept_tcp_connection(&left_fd, left_listen_fd, NULL, NULL);
+    }
+
+    if (rv < 0) {
+        fprintf(stderr, "Failed to accept connection on port %s\n", left_port);
+        return rv;
+    }
+
+    if (right_is_server) {
+        rv = accept_tcp_connection(&right_fd, right_listen_fd, NULL, NULL);
+    }
+
+    if (rv < 0) {
+        fprintf(stderr, "Failed to accept connection on port %s\n", right_port);
         return rv;
     }
 
@@ -277,12 +365,66 @@ int main(int argc, char **argv) {
             }
         }
 
+        if (discon_mean > 0) {
+            // We're running disconnections
+            if (disconnection_timeout == UINT64_MAX) {
+                // The timeout is not set
+                if (disconnected) {
+                    // Sample from the reconnection distribution
+                    disconnection_timeout = ts+get_rand_gaussian(recon_mean, recon_sd);
+                } else {
+                    // Sample from the disconnection distribution
+                    disconnection_timeout = ts+get_rand_gaussian(discon_mean, discon_sd);
+                }
+                // Clip the timeout if it's in the past (distribution came back negative)
+                if (disconnection_timeout < ts) disconnection_timeout = ts;
+            }
+
+            if (disconnection_timeout < timeout) {
+                // We're processing the disconnection/reconnection before sending the next SPP
+                timeout = disconnection_timeout;
+            }
+        }
+
         // Wait on a message on either end
         rv = poll(polls, 2, timeout);
 
         if (rv == 0) {
             // Poll continued due to timeout
             ts = timestamp_ms();
+
+            if (ts <= disconnection_timeout) {
+                // Run the disconnection op.
+                // TODO - Define these ops.
+                if (disconnected) {
+                    // Reconnect
+                    if (left_is_server) {
+                        rv = accept_tcp_connection(&left_fd, left_listen_fd, NULL, NULL);
+                    } else {
+                        rv = connect_tcp_socket(&left_fd, "127.0.0.1", left_port, NULL, NULL);
+                    }
+
+                    if (rv < 0) {
+                        return rv;
+                    }
+
+                    if (right_is_server) {
+                        rv = accept_tcp_connection(&right_fd, right_listen_fd, NULL, NULL);
+                    } else {
+                        rv = connect_tcp_socket(&right_fd, "127.0.0.1", right_port, NULL, NULL);
+                    }
+
+                    if (rv < 0) {
+                        return rv;
+                    }
+                } else {
+                    // Disconnect
+                    close(left_fd);
+                    close(right_fd);
+                }
+                disconnection_timeout = UINT64_MAX;
+                disconnected = !disconnected;
+            }
 
             // Process right packets
             for (pkt_ptr = right_waiting_datas.next; pkt_ptr != NULL; pkt_ptr = right_waiting_datas.next) {
@@ -323,7 +465,7 @@ int main(int argc, char **argv) {
         } else {
             // We must have recieved TCP data
             // RNG to determine if we need to drop this SPP
-            rand_uint = rand();
+            rand_uint = get_rand_u64();
 
             if (rand_uint < loss_cutoff) {
                 discard_packet = 1;
@@ -331,9 +473,22 @@ int main(int argc, char **argv) {
                 discard_packet = 0;
             }
 
-            if (buf == NULL) {
-                fprintf(stderr, "Out of memory\n");
-                return -1;
+            delay = get_rand_gaussian(delay_mean, delay_sd);
+
+            if (delay < 0) delay = 0;
+
+            // Build the bit error mask
+            for (int i = 0; i<SPP_MTU; i++) {
+                rand_byte = 0;
+                for (int b = 0; b < 8; b++) {
+                    rand_uint = get_rand_u64();
+                    if (rand_uint < bit_error_cutoff) {
+                        // Corrupt this bit
+                        rand_byte |= 0x01u << b;
+                    }
+                }
+                // We're done building the corruption byte. Add it to the mask
+                bit_error_mask[i] = rand_byte;
             }
 
             if (polls[0].revents & POLLIN) {
@@ -359,28 +514,10 @@ int main(int argc, char **argv) {
                     continue;
                 }
 
-                rand_uint = rand();
-
-                if (rand_uint < corruption_cutoff) {
-                    if (debug >= 1) printf("Corrupting right bound SPP\n");
-                    for (int offset = 0; offset < (rv+SPP_HEADER_LEN); offset += 1) {
-                        rand_bytes(&rand_byte, 1);
-                        // Corrupt this byte
-                        buf[offset] ^= rand_byte;
-                    }
+                // Apply the corruption mask for this packet
+                for (int i = 0; i < rv+SPP_HEADER_LEN; i++) {
+                    buf[i] ^= bit_error_mask[i];
                 }
-
-                rand_uint = rand();
-
-                if (rand_uint < payload_corruption_cutoff) {
-                    if (debug >= 1) printf("Corrupting right bount SPP payload\n");
-                    for (int offset = SPP_HEADER_LEN; offset < (rv + SPP_HEADER_LEN); offset += 1) {
-                        rand_bytes(&rand_byte, 1);
-                        buf[offset] ^= rand_byte;
-                    }
-                }
-
-                delay = delay_mean + (rand() % 2*delay_range) - delay_range;
 
                 pkt_ptr = make_node(buf, rv+SPP_HEADER_LEN, delay);
 
@@ -413,28 +550,10 @@ int main(int argc, char **argv) {
                     continue;
                 }
 
-                rand_uint = rand();
-
-                if (rand_uint < corruption_cutoff) {
-                    if (debug >= 1) printf("Corrupting left bound SPP\n");
-                    for (int offset = 0; offset < (rv+SPP_HEADER_LEN); offset += 1) {
-                        rand_bytes(&rand_byte, 1);
-                        // Corrupt this byte
-                        buf[offset] ^= rand_byte;
-                    }
-                }
-
-                rand_uint = rand();
-
-                if (rand_uint < payload_corruption_cutoff) {
-                    if (debug >= 1) printf("Corrupting left bount SPP payload\n");
-                    for (int offset = SPP_HEADER_LEN; offset < (rv + SPP_HEADER_LEN); offset += 1) {
-                        rand_bytes(&rand_byte, 1);
-                        buf[offset] ^= rand_byte;
-                    }
-                }
-
-                delay = delay_mean + (rand() % 2*delay_range) - delay_range;
+                // Apply the corruption mask for this packet
+                for (int i = 0; i < rv+SPP_HEADER_LEN; i++) {
+                    buf[i] ^= bit_error_mask[i];
+                }                
 
                 pkt_ptr = make_node(buf, rv + SPP_HEADER_LEN, delay);
 

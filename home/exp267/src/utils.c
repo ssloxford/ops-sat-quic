@@ -59,6 +59,22 @@ int rand_bytes(uint8_t* dest, size_t destlen) {
     return 0;
 }
 
+uint8_t get_rand_byte() {
+    uint8_t val;
+
+    rand_bytes(&val, sizeof(val));
+
+    return val;
+}
+
+uint64_t get_rand_u64() {
+    uint64_t val;
+
+    rand_bytes((uint8_t*) &val, sizeof(val));
+
+    return val;
+}
+
 void debug_log(void *user_data, const char *format, ...) {
     va_list args;
     va_start(args, format);
