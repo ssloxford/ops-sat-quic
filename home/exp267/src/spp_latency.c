@@ -224,8 +224,9 @@ int main(int argc, char **argv) {
                         recon_sd = atoi(optarg);
                         break;
                 }
+                break;
             case '?':
-                printf("Unknown option -%c\n", optopt);
+                printf("Unknown option -%c (%d)\n", optopt, optopt);
                 break;
         }
     }
@@ -290,7 +291,7 @@ int main(int argc, char **argv) {
     }
 
     if (rv < 0) {
-        fprintf(stderr, "Failed to process port %s\n", left_port);
+        fprintf(stderr, "Failed to process left side port %s\n", left_port);
         return rv;
     }
 
@@ -302,7 +303,7 @@ int main(int argc, char **argv) {
     }
 
     if (rv < 0) {
-        fprintf(stderr, "Failed to process port %s\n", right_port);
+        fprintf(stderr, "Failed to process right side port %s\n", right_port);
         return rv;
     }
 
@@ -326,6 +327,10 @@ int main(int argc, char **argv) {
         return rv;
     }
 
+    if (debug >= 1) {
+        printf("Established left side as %s on port %s with fd %d\n", left_is_server ? "server" : "client", left_port, left_fd);
+        printf("Established right side as %s on port %s with fd %d\n", right_is_server ? "server" : "client", right_port, right_fd);
+    }
 
     polls[0].fd = left_fd;
     polls[1].fd = right_fd;
@@ -393,9 +398,8 @@ int main(int argc, char **argv) {
             // Poll continued due to timeout
             ts = timestamp_ms();
 
-            if (ts <= disconnection_timeout) {
+            if (ts <= disconnection_timeout && discon_mean > 0) {
                 // Run the disconnection op.
-                // TODO - Define these ops.
                 if (disconnected) {
                     // Reconnect
                     if (left_is_server) {
@@ -405,6 +409,7 @@ int main(int argc, char **argv) {
                     }
 
                     if (rv < 0) {
+                        fprintf(stderr, "Failed to establish left connection\n");
                         return rv;
                     }
 
@@ -415,12 +420,17 @@ int main(int argc, char **argv) {
                     }
 
                     if (rv < 0) {
+                        fprintf(stderr, "Failed to establish right connection\n");
                         return rv;
                     }
+
+                    if (debug >= 1) printf("Reconnected\n");
                 } else {
                     // Disconnect
                     close(left_fd);
                     close(right_fd);
+
+                    if (debug >= 1) printf("Disconnected\n");
                 }
                 disconnection_timeout = UINT64_MAX;
                 disconnected = !disconnected;
@@ -434,6 +444,7 @@ int main(int argc, char **argv) {
                 rv = send(right_fd, pkt_ptr->data, pkt_ptr->datalen, 0);
 
                 if (rv < 0) {
+                    fprintf(stderr, "Failed to send to right side: %s\n", strerror(errno));
                     return rv;
                 }
 
@@ -452,6 +463,7 @@ int main(int argc, char **argv) {
                 rv = send(left_fd, pkt_ptr->data, pkt_ptr->datalen, 0);
                 
                 if (rv < 0) {
+                    fprintf(stderr, "Failed to send to left side: %s\n", strerror(errno));
                     return rv;
                 }
 
@@ -476,6 +488,8 @@ int main(int argc, char **argv) {
             delay = get_rand_gaussian(delay_mean, delay_sd);
 
             if (delay < 0) delay = 0;
+
+            if (debug >= 2) printf("Set SPP delay as %d\n", delay);
 
             // Build the bit error mask
             for (int i = 0; i<SPP_MTU; i++) {
@@ -523,6 +537,7 @@ int main(int argc, char **argv) {
 
                 if (pkt_ptr == NULL) {
                     // Out of memory
+                    fprintf(stderr, "Out of memory\n");
                     return -1;
                 }
 
@@ -559,6 +574,7 @@ int main(int argc, char **argv) {
 
                 if (pkt_ptr == NULL) {
                     // Out of memory
+                    fprintf(stderr, "Out of memory\n");
                     return -1;
                 }
 
